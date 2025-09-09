@@ -1,38 +1,66 @@
-#include "Device.h"
+#include <Device.h>
 
-const short LED = 23;
-const short POTE = 32;
 
-const short PIN_SENSOR = 14;
-Device _device(128, 64, -1, PIN_SENSOR, DHT22);
+const byte LED = 23;
+const byte BOTON = 2;
+const byte POT = 32;
+volatile bool pantalla = true;
+Device device = Device(128, 64, -1, 14, DHT22);
 
-void setup()
-{
+void setup() {
+  
   Serial.begin(9600);
+  device.begin();
   pinMode(LED, OUTPUT);
-  _device.begin();
-  _device.showDisplay("DEVICE ON!");
+  pinMode(BOTON, INPUT_PULLUP);
 }
 
-void loop()
-{
-  // sensor:
-  char buffer[64];
-  float temp = _device.readTemp();
-  float hum = _device.readHum();
+void loop() {
+  float valor = analogRead(POT);
+  valor = map(valor, 0, 4095, 14.0, 40.0);
+  float hum = device.readHum();
+  float t = device.readTemp();
+  Serial.println(valor);
+  if (!digitalRead(BOTON)) {
+    pantalla = !pantalla;
+  }
+  
+  device.clear();
+  if (pantalla) {
+    
+    if (t >= valor) {
+    
+      device.showDisplay("Temperatura", 0, 15);
+      device.dibujarSol();
+      digitalWrite(LED, HIGH);
+    }
+    else  {
+      
+      device.showDisplay("Temperatura", 0, 15);
+      device.dibujarCheck();
+      digitalWrite(LED, LOW);
+    }
+    }
+  else {
+    
+    device.showDisplay("Humedad", 0, 15);
+    device.dibujarGota(hum);
+    Serial.println(hum);
+    if (hum < 45) {
+      
+      digitalWrite(LED, HIGH);
+      delay(400);
+      digitalWrite(LED, LOW);
+      
+      
+    }
+    
+  }
+    delay(400);
+  
+  
 
-  if (temp >= 35)
-  {
-    digitalWrite(LED, HIGH);
-  }
-  else
-  {
-    digitalWrite(LED, LOW);
-  }
-  int valor = analogRead(POTE);
-  analogWrite(LED, map(valor, 0, 4095, 0, 255));
-  sprintf(buffer, "Temp: %.1f C\nHum: %.1f %%\nVal: %d\nVoltios: %.2f", temp, hum, valor, valor * 3.3 / 4095);
-  _device.showDisplay(buffer);
- 
-  delay(10);
+  
+
+  
 }

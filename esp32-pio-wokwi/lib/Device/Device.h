@@ -1,23 +1,31 @@
-#ifndef _DEVICE
-#define _DEVICE
-
+#ifndef DEVICE
+#define DEVICE
 #include <Arduino.h>
-//dependencies:
 #include <Adafruit_SH110X.h>
-#include <Wire.h> 
 #include <DHT.h>
+#include <Wire.h>
 
-class Device{   
-  public:
-    Device(int w, int h, int reset, int pinOLED,  int model);
-    void begin();
-    void showDisplay(const char * text);
-    float readTemp();
-    float readHum();
-    
-  private:
-    Adafruit_SH1106G _display;
-    DHT _sensor; 
+
+
+
+class Device {
+    public:
+        Device(int w, int h, int reset, int pinDHT, int modelo);
+        void begin();
+        void showDisplay(String txt, int x, int y);
+        void dibujarPixel(int x, int y);
+        void dibujarSol();
+        void dibujarCheck();
+        void dibujarGota(float h);
+        float readTemp();
+        float readHum(); 
+        void clear();
+
+
+    private:
+        Adafruit_SH1106G _display;
+        DHT _sensor;
 };
+
 
 #endif
