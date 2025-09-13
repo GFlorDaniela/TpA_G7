@@ -13,6 +13,7 @@ class Device {
         Device(int w, int h, int reset, int pinDHT, int modelo);
         void begin();
         void showDisplay(String txt, int x, int y);
+        void mostrarMenu(int opcion);
         void dibujarPixel(int x, int y);
         void dibujarSol();
         void dibujarCheck();

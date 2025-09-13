@@ -9,7 +9,7 @@ Device::Device(int w, int h, int reset, int pinDHT, int modelo): _display(w, h, 
 void Device::begin() {
     _sensor.begin();
     _display.begin(0x3c, true);
-    _display.setTextSize(1);
+    _display.setTextSize(0.5);
     _display.setTextColor(SH110X_WHITE);
     _display.clearDisplay();
 }
@@ -32,6 +32,33 @@ float Device::readTemp() {
 float Device::readHum() {
     return _sensor.readHumidity();
 }
+
+void Device::mostrarMenu(int opcion) {
+    showDisplay("Opciones:", 20, 0);
+    showDisplay("Estado individual", 20, 12);
+    showDisplay("Estado Completo", 20, 24);
+    showDisplay("Cambiar ref.", 20, 36);
+    showDisplay("Forazar sistemas", 20, 48);
+    switch (opcion) {
+        case 0:
+            showDisplay(">>", 4, 12);
+            break;
+        case 1:
+            showDisplay(">>", 4, 24);
+            break;
+        case 2:
+            showDisplay(">>", 4, 36);
+            break;
+        case 3:
+            showDisplay(">>", 4, 48);
+            break;
+        default:
+            break;
+
+    }
+}
+
+
 
 void Device::dibujarSol() {
     _display.drawLine(95, 6, 95, 9, SH110X_WHITE);
