@@ -13,14 +13,15 @@ volatile float hum_min = random(40, 60);
 int cont = 0;
 int actualCLK;
 int pasar = 0;
-
+float t_ref;
 bool forzarVentilacion = false;
 bool forzarRiego = false;
 
 bool ventilacionActiva = false;
 bool riegoActivo = false;
+bool t_forz = false;
 unsigned long lastUpdate = 0;
-const unsigned long updateInterval = 2000; // actualizar cada 2 segundo
+const unsigned long updateInterval = 1000; // actualizar cada segundo
 
 
 
@@ -46,8 +47,13 @@ void setup() {
 }
 
 void loop() {
-  float t_ref = analogRead(POT);
-  t_ref = map(t_ref, 0, 4095, 20.0, 40.0);
+  
+  if (!t_forz) {
+    t_ref = analogRead(POT);
+    t_ref = map(t_ref, 0, 4095, 20.0, 40.0);
+    
+  }
+  
   float hum = device.readHum();
   float t = device.readTemp();
 
@@ -78,20 +84,26 @@ void loop() {
     }
   } else {
     delay(200);
-    ventilacionActiva = (t >= t_ref);
-    riegoActivo = (hum < hum_min);
+    if (!forzarVentilacion) {
+      ventilacionActiva = (t >= t_ref);
+    }
+    if (!forzarRiego) {
+      riegoActivo = (hum < hum_min);
+    }
+    
+    
     device.clear();
     
 
     switch (cont) {
       case 0:
-        
+        device.clear();
         if (pantalla) {
           char texto[64];
           sprintf(texto, "Temp: %.2f C", t);
           device.showDisplay(texto, 0, 15);
           device.showDisplay("T referencia: " + String(t_ref) + " C", 0, 36);
-          if (t >= t_ref) {
+          if (ventilacionActiva) {
             
             device.dibujarSol();
             device.showDisplay("Ventilacion Activa", 0, 54);
@@ -111,12 +123,12 @@ void loop() {
           device.dibujarGota(hum);
         
           device.showDisplay("Hum minima: " + String(hum_min) + " %", 0, 36);
-          if (hum < hum_min) {
+          if (riegoActivo) {
             device.showDisplay("Riego Activado", 0, 54);
             digitalWrite(LED, HIGH);
             delay(400);
             digitalWrite(LED, LOW);
-            delay(200);
+            delay(100);
             
           }
           else {
@@ -130,6 +142,7 @@ void loop() {
           if (pasar == 2) {
             pasar = 0;
             menu = !menu;
+            digitalWrite(LED, LOW);
             device.clear();
           }
         }
@@ -143,23 +156,42 @@ void loop() {
         device.showDisplay("T ref: " + String(t_ref, 1) + " C", 0, 22);
         device.showDisplay("Hum: " + String(hum, 1) + " %", 0, 32);
         device.showDisplay("H min: " + String(hum_min, 1) + " %", 0, 42);
-
-        // Mostrar estado de sistemas
-        if (ventilacionActiva) {
-          device.showDisplay("Vent ON", 0, 52);
-        } else {
-          device.showDisplay("Vent OFF", 0, 52);
-        }
-
-        if (riegoActivo) {
-          device.showDisplay("Riego ON", 64, 52);
-        } else {
-          device.showDisplay("Riego OFF", 64, 52);
-        }
+       
+       
       }
+      if (ventilacionActiva & riegoActivo) {
+        device.showDisplay("Vent ON", 0, 52);
+        device.showDisplay("Riego ON", 64, 52);
+        digitalWrite(LED, HIGH);
+        delay(500);
+        digitalWrite(LED, LOW);
+        delay(150);
+        digitalWrite(LED, HIGH);
+        
+      }
+      else if (ventilacionActiva) {
+        device.showDisplay("Vent ON", 0, 52);
+        device.showDisplay("Riego OFF", 64, 52);
+        digitalWrite(LED, HIGH);
+      }
+      else if (riegoActivo) {
+        device.showDisplay("Vent OFF", 0, 52);
+        device.showDisplay("Riego ON", 64, 52); 
+        digitalWrite(LED, HIGH);
+        delay(400);
+        digitalWrite(LED, LOW);
+        delay(200);
+      }
+      else {
+        device.showDisplay("Vent OFF", 0, 52);
+        device.showDisplay("Riego OFF", 64, 52);
+        digitalWrite(LED, LOW);
+      }
+
 
       if (!digitalRead(ENC_PUSH)) {
         menu = !menu;
+        digitalWrite(LED, LOW);
         device.clear();
       }
       break;
@@ -169,11 +201,16 @@ void loop() {
           String input = Serial.readStringUntil('\n');
           input.trim();
           if (input.startsWith("T=")) {
+            t_forz = true;
             t_ref = input.substring(2).toFloat();
             Serial.println("Nueva T ref: " + String(t_ref));
           } else if (input.startsWith("H=")) {
             hum_min = input.substring(2).toFloat();
             Serial.println("Nueva H min: " + String(hum_min));
+          }
+          else if (input.startsWith("POT")) {
+            t_forz = false;
+            Serial.println("T ref vuelve a ser por potenciador");
           }
         }
         if (!digitalRead(ENC_PUSH)) {
@@ -191,23 +228,22 @@ void loop() {
           input.trim();
           if (input.equalsIgnoreCase("VENT_ON")) {
             forzarVentilacion = true;
+            ventilacionActiva = true;
           } else if (input.equalsIgnoreCase("VENT_OFF")) {
-            forzarVentilacion = false;
+            forzarVentilacion = true;
+            ventilacionActiva = false;
           } else if (input.equalsIgnoreCase("RIEGO_ON")) {
             forzarRiego = true;
+            riegoActivo = true;
           } else if (input.equalsIgnoreCase("RIEGO_OFF")) {
+            forzarRiego = true;
+            riegoActivo = false;
+          } else if (input.equalsIgnoreCase("AUTO")) {
             forzarRiego = false;
+            forzarVentilacion = false;
           }
         }
 
-        // acción física de los sistemas
-        if (forzarVentilacion) digitalWrite(LED, HIGH);
-        if (forzarRiego) {
-          digitalWrite(LED, HIGH);
-          delay(400);
-          digitalWrite(LED, LOW);
-          delay(200);
-        }
 
         if (!digitalRead(ENC_PUSH)) {
           menu = !menu;
