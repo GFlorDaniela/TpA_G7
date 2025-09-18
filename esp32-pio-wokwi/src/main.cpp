@@ -14,6 +14,15 @@ int cont = 0;
 int actualCLK;
 int pasar = 0;
 
+bool forzarVentilacion = false;
+bool forzarRiego = false;
+
+bool ventilacionActiva = false;
+bool riegoActivo = false;
+unsigned long lastUpdate = 0;
+const unsigned long updateInterval = 2000; // actualizar cada 2 segundo
+
+
 
 void setup() {
   
@@ -23,6 +32,8 @@ void setup() {
   pinMode(ENC_PUSH, INPUT_PULLUP);
   pinMode(ENC_CLK, INPUT_PULLUP);
   pinMode(ENC_DT, INPUT_PULLUP);
+
+  
 
   
   char c_hum[40];
@@ -67,7 +78,11 @@ void loop() {
     }
   } else {
     delay(200);
+    ventilacionActiva = (t >= t_ref);
+    riegoActivo = (hum < hum_min);
     device.clear();
+    
+
     switch (cont) {
       case 0:
         
@@ -120,26 +135,85 @@ void loop() {
         }
         break;
       case 1:
-        device.showDisplay("Info Completa: ", 0, 15);
-        if (!digitalRead(ENC_PUSH)) {
-            menu = !menu;
-            device.clear();
-          }
-        break;
+        if (millis() - lastUpdate > updateInterval) {
+        lastUpdate = millis();
+        device.clear();
+        device.showDisplay("Info Completa:", 0, 0);
+        device.showDisplay("Temp: " + String(t, 1) + " C", 0, 12);
+        device.showDisplay("T ref: " + String(t_ref, 1) + " C", 0, 22);
+        device.showDisplay("Hum: " + String(hum, 1) + " %", 0, 32);
+        device.showDisplay("H min: " + String(hum_min, 1) + " %", 0, 42);
+
+        // Mostrar estado de sistemas
+        if (ventilacionActiva) {
+          device.showDisplay("Vent ON", 0, 52);
+        } else {
+          device.showDisplay("Vent OFF", 0, 52);
+        }
+
+        if (riegoActivo) {
+          device.showDisplay("Riego ON", 64, 52);
+        } else {
+          device.showDisplay("Riego OFF", 64, 52);
+        }
+      }
+
+      if (!digitalRead(ENC_PUSH)) {
+        menu = !menu;
+        device.clear();
+      }
+      break;
       case 2:
         device.showDisplay("Cambio por serial", 0, 15);
-        if (!digitalRead(ENC_PUSH)) {
-            menu = !menu;
-            device.clear();
+        if (Serial.available()) {
+          String input = Serial.readStringUntil('\n');
+          input.trim();
+          if (input.startsWith("T=")) {
+            t_ref = input.substring(2).toFloat();
+            Serial.println("Nueva T ref: " + String(t_ref));
+          } else if (input.startsWith("H=")) {
+            hum_min = input.substring(2).toFloat();
+            Serial.println("Nueva H min: " + String(hum_min));
           }
-          break;
+        }
+        if (!digitalRead(ENC_PUSH)) {
+          menu = !menu;
+          device.clear();
+        }
+        break;
       case 3:
-        device.showDisplay("Forzar", 0, 15);
-        if (!digitalRead(ENC_PUSH)) {
-            menu = !menu;
-            device.clear();
+        device.showDisplay("Forzar sistemas", 0, 0);
+        device.showDisplay(forzarVentilacion ? "Vent ON" : "Vent OFF", 0, 20);
+        device.showDisplay(forzarRiego ? "Riego ON" : "Riego OFF", 0, 36);
+
+        if (Serial.available()) {
+          String input = Serial.readStringUntil('\n');
+          input.trim();
+          if (input.equalsIgnoreCase("VENT_ON")) {
+            forzarVentilacion = true;
+          } else if (input.equalsIgnoreCase("VENT_OFF")) {
+            forzarVentilacion = false;
+          } else if (input.equalsIgnoreCase("RIEGO_ON")) {
+            forzarRiego = true;
+          } else if (input.equalsIgnoreCase("RIEGO_OFF")) {
+            forzarRiego = false;
           }
-          break;
+        }
+
+        // acción física de los sistemas
+        if (forzarVentilacion) digitalWrite(LED, HIGH);
+        if (forzarRiego) {
+          digitalWrite(LED, HIGH);
+          delay(400);
+          digitalWrite(LED, LOW);
+          delay(200);
+        }
+
+        if (!digitalRead(ENC_PUSH)) {
+          menu = !menu;
+          device.clear();
+        }
+        break;
       default:
           Serial.println("Error en opcion");
           menu = !menu;
@@ -149,11 +223,5 @@ void loop() {
         
     
   }
-  
-  
-  
-
-  
-
-  
+   
 }
