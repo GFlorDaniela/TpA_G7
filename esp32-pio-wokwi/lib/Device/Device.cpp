@@ -38,7 +38,7 @@ void Device::mostrarMenu(int opcion) {
     showDisplay("Estado individual", 20, 12);
     showDisplay("Estado Completo", 20, 24);
     showDisplay("Cambiar ref.", 20, 36);
-    showDisplay("Forazar sistemas", 20, 48);
+    showDisplay("Forzar sistemas", 20, 48);
     switch (opcion) {
         case 0:
             showDisplay(">>", 4, 12);
