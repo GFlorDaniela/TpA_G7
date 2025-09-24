@@ -11,7 +11,7 @@ Device device = Device(128, 64, -1, 33, DHT22);
 volatile float hum_min = random(40, 60); // valor de referencia (mínimo de humedad).
 volatile int cont = 0;
 int pasar = 0;
-float t_ref = random(15,25); // valor de referencia (mínimo temperatura). DUDA: esta bien que sea aleatorio?
+float t_ref = 0; // valor de referencia (mínimo temperatura). DUDA: esta bien que sea aleatorio?
 bool forzarVentilacion = false; // permiten activar manualmente los sistemas.
 bool forzarRiego = false;
 
@@ -89,6 +89,10 @@ void setup() {
   // ENC_CLK y ENC_DT → pines del encoder rotatorio, también con INPUT_PULLUP.
   pinMode(ENC_CLK, INPUT_PULLUP);
   pinMode(ENC_DT, INPUT_PULLUP);
+
+  // Inicializamos referencia de temperatura según POT
+  int lecturaPot = analogRead(POT);   // valor entre 0 y 4095
+  t_ref = map(lecturaPot, 0, 4095, 20.0, 40.0); // lo mapeamos a 20–40
 
   // Configurar interrupciones
   // Inicializamos el ultimo valor del CKL como el valor actual del CKL
