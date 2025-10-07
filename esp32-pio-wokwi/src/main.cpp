@@ -11,7 +11,7 @@ Device device = Device(128, 64, -1, 33, DHT22);
 volatile float hum_min = random(40, 60); // valor de referencia (mínimo de humedad).
 volatile int cont = 0;
 int pasar = 0;
-float t_ref = random(15,25); // valor de referencia (mínimo temperatura). DUDA: esta bien que sea aleatorio?
+float t_ref;
 bool forzarVentilacion = false; // permiten activar manualmente los sistemas.
 bool forzarRiego = false;
 
@@ -90,6 +90,10 @@ void setup() {
   pinMode(ENC_CLK, INPUT_PULLUP);
   pinMode(ENC_DT, INPUT_PULLUP);
 
+  //Temperatura de referencia inicial
+  t_ref = analogRead(POT);
+  t_ref = map(t_ref, 0, 4095, 20.0, 40.0);
+
   // Configurar interrupciones
   // Inicializamos el ultimo valor del CKL como el valor actual del CKL
   lastCLKState = digitalRead(ENC_CLK);
@@ -104,8 +108,14 @@ void setup() {
   Serial.println(c_hum);
 
   //Mostramos cartel de sistema iniciando por pantalla
-  device.showDisplay("Sistema iniciando...", 0, 15);
-  delay(2000);
+  device.showDisplay("Sistema iniciando", 0, 15);
+  delay(500);
+  device.dibujarPixel(106,20);
+  delay(500);
+  device.dibujarPixel(110,20);
+  delay(500);
+  device.dibujarPixel(114,20);
+  delay(500);
   device.clear();
   device.mostrarMenu(cont);
 }
@@ -177,7 +187,6 @@ void loop() {
     
     device.clear();
     // Si la t ref no fue cambiada por serial, se lee el potenciometro y se cambia al valor de ese momento
-    // DUDA: esto esta bien?
   if (!t_forz) {
     t_ref = analogRead(POT);
     t_ref = map(t_ref, 0, 4095, 20.0, 40.0);
@@ -270,7 +279,7 @@ void loop() {
 break;
         
       case 1:
-      // DUDA: Con esto evitamos que la led no titile muy rapido? 
+      
         if (millis() - lastUpdate > updateInterval) {
           lastUpdate = millis();
           device.clear();
