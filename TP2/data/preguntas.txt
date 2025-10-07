@@ -1,0 +1,3 @@
+¿Qué lenguaje usa Arduino?;C++;Python;Java;0
+Capital de Francia;Roma;Madrid;París;2
+Color de la bandera de Argentina;Azul;Blanco;Celeste;2
