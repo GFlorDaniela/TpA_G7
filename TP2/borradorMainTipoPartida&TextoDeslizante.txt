@@ -1,0 +1,749 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
+
+// OLED
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// Pines
+#define LED_PIN 23
+#define ENCODER_CLK 18
+#define ENCODER_DT 5
+#define ENCODER_SW 19
+
+// Estructuras de datos
+struct Pregunta {
+  String texto;
+  String opciones[3];
+  int respuestaCorrecta;
+  int puntaje;
+};
+
+struct Usuario {
+  String nombre;
+  int puntuacionMaxima;
+  int partidasJugadas;
+};
+
+// SIMULACIÓN DE ARCHIVOS
+const char* ARCHIVO_PREGUNTAS[] = {
+  "¿Qué lenguaje usa Arduino?;C++;Python;Java;0",
+  "Capital de Francia;Roma;Madrid;París;2", 
+  "Color bandera Argentina;Azul;Blanco;Celeste;2",
+  "¿2+2?;3;4;5;1",
+  "Animal Australia;Canguro;Koala;Emú;0"
+};
+
+const int ARCHIVO_PUNTAJES[] = {10, 15, 10, 5, 10};
+
+// Variables globales
+Pregunta preguntas[10];
+Usuario usuarios[20];
+int totalPreguntas = 5;
+int totalUsuarios = 0;
+int preguntaActual = 0;
+int opcionSeleccionada = 0;
+int puntuacionTotal = 0;
+int usuarioActual = -1;
+bool quizCompletado = false;
+bool quizIniciado = false;
+bool ingresandoNombre = false;
+String nombreTemp = "";
+
+// Nuevas variables para modos de partida
+enum ModoPartida { MODO_MENU, MODO_1VS1, MODO_RANKING, MODO_MULTIJUGADOR };
+ModoPartida modoActual = MODO_MENU;
+int jugador1 = -1;
+int jugador2 = -1;
+int turnoJugador = 0;
+int puntuacionJugador1 = 0;
+int puntuacionJugador2 = 0;
+bool esperandoJugador2 = false;
+
+// Variables encoder
+int lastCLK = HIGH;
+unsigned long lastButtonPress = 0;
+
+// FUNCIONES DE SIMULACIÓN DE ARCHIVOS
+void simularCargaArchivos() {
+  Serial.println("=== SIMULANDO SISTEMA DE ARCHIVOS ===");
+  Serial.println("Cargando preguntas desde 'preguntas.txt'...");
+  Serial.println("Cargando puntajes desde 'puntajes.txt'...");
+  
+  for(int i = 0; i < totalPreguntas; i++){
+    String linea = ARCHIVO_PREGUNTAS[i];
+    
+    int separadores[5];
+    int sepIndex = 0;
+    
+    for(int j = 0; j < linea.length() && sepIndex < 5; j++){
+      if(linea.charAt(j) == ';'){
+        separadores[sepIndex++] = j;
+      }
+    }
+    
+    if(sepIndex == 4){
+      preguntas[i].texto = linea.substring(0, separadores[0]);
+      preguntas[i].opciones[0] = linea.substring(separadores[0] + 1, separadores[1]);
+      preguntas[i].opciones[1] = linea.substring(separadores[1] + 1, separadores[2]);
+      preguntas[i].opciones[2] = linea.substring(separadores[2] + 1, separadores[3]);
+      preguntas[i].respuestaCorrecta = linea.substring(separadores[3] + 1).toInt();
+      preguntas[i].puntaje = ARCHIVO_PUNTAJES[i];
+      
+      Serial.println("Cargada: " + preguntas[i].texto);
+    }
+  }
+  Serial.println("Total: " + String(totalPreguntas) + " preguntas cargadas\n");
+}
+
+// FUNCIONES DE USUARIOS
+void inicializarUsuariosEjemplo() {
+  usuarios[0] = {"ANA", 45, 3};
+  usuarios[1] = {"CARLOS", 35, 2};
+  usuarios[2] = {"MARIA", 50, 4};
+  totalUsuarios = 3;
+  
+  Serial.println("Usuarios de ejemplo cargados:");
+  for(int i = 0; i < totalUsuarios; i++) {
+    Serial.println(usuarios[i].nombre + " - Max: " + usuarios[i].puntuacionMaxima + 
+                  " - Partidas: " + usuarios[i].partidasJugadas);
+  }
+}
+
+int buscarUsuario(String nombre) {
+  for(int i = 0; i < totalUsuarios; i++) {
+    if(usuarios[i].nombre == nombre) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+void agregarUsuario(String nombre) {
+  if(totalUsuarios < 20) {
+    usuarios[totalUsuarios].nombre = nombre;
+    usuarios[totalUsuarios].puntuacionMaxima = 0;
+    usuarios[totalUsuarios].partidasJugadas = 0;
+    usuarioActual = totalUsuarios;
+    totalUsuarios++;
+    Serial.println("Nuevo usuario creado: " + nombre);
+  }
+}
+
+Usuario* obtenerMejorRanking() {
+  if(totalUsuarios == 0) return nullptr;
+  
+  int mejorIndex = 0;
+  for(int i = 1; i < totalUsuarios; i++) {
+    if(usuarios[i].puntuacionMaxima > usuarios[mejorIndex].puntuacionMaxima) {
+      mejorIndex = i;
+    } else if(usuarios[i].puntuacionMaxima == usuarios[mejorIndex].puntuacionMaxima) {
+      if(usuarios[i].partidasJugadas > usuarios[mejorIndex].partidasJugadas) {
+        mejorIndex = i;
+      }
+    }
+  }
+  return &usuarios[mejorIndex];
+}
+
+void actualizarPuntuacionUsuario() {
+  if(usuarioActual >= 0) {
+    usuarios[usuarioActual].partidasJugadas++;
+    if(puntuacionTotal > usuarios[usuarioActual].puntuacionMaxima) {
+      usuarios[usuarioActual].puntuacionMaxima = puntuacionTotal;
+    }
+    Serial.println("Usuario " + usuarios[usuarioActual].nombre + 
+                  " actualizado. Max: " + usuarios[usuarioActual].puntuacionMaxima +
+                  " Partidas: " + usuarios[usuarioActual].partidasJugadas);
+  }
+}
+
+void mostrarRanking() {
+  Serial.println("=== RANKING ACTUAL ===");
+  
+  Usuario rankingTemp[totalUsuarios];
+  for(int i = 0; i < totalUsuarios; i++) {
+    rankingTemp[i] = usuarios[i];
+  }
+  
+  for(int i = 0; i < totalUsuarios - 1; i++) {
+    for(int j = i + 1; j < totalUsuarios; j++) {
+      bool debeIntercambiar = false;
+      
+      if(rankingTemp[j].puntuacionMaxima > rankingTemp[i].puntuacionMaxima) {
+        debeIntercambiar = true;
+      }
+      else if(rankingTemp[j].puntuacionMaxima == rankingTemp[i].puntuacionMaxima) {
+        if(rankingTemp[j].partidasJugadas > rankingTemp[i].partidasJugadas) {
+          debeIntercambiar = true;
+        }
+        else if(rankingTemp[j].partidasJugadas == rankingTemp[i].partidasJugadas) {
+          if(rankingTemp[j].nombre < rankingTemp[i].nombre) {
+            debeIntercambiar = true;
+          }
+        }
+      }
+      
+      if(debeIntercambiar) {
+        Usuario temp = rankingTemp[i];
+        rankingTemp[i] = rankingTemp[j];
+        rankingTemp[j] = temp;
+      }
+    }
+  }
+  
+  for(int i = 0; i < totalUsuarios; i++) {
+    String posicion = String(i+1) + ".";
+    if(i < 9) posicion = " " + posicion;
+    
+    Serial.println(posicion + " " + rankingTemp[i].nombre + 
+                  " - Puntos: " + rankingTemp[i].puntuacionMaxima +
+                  " - Partidas: " + rankingTemp[i].partidasJugadas);
+  }
+  Serial.println("=====================");
+}
+
+// FUNCIONES DE INTERFAZ Y MENÚ
+void mostrarMenuPrincipal() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+  display.setCursor(0, 0);
+  display.println("SELECCIONA MODO:");
+  
+  String opciones[3] = {"1vs1", "Vs mejor RANKING", "Multijugador"};
+
+  for (int i = 0; i < 3; i++) {
+    if (i == opcionSeleccionada) {
+      display.print("> ");
+    } else {
+      display.print("  ");
+    }
+    display.println(opciones[i]);
+  }
+
+  display.setCursor(0, 55);
+  display.println("Gira y click para seleccionar");
+  display.display();
+}
+
+void mostrarPantallaInicio() {
+  display.clearDisplay();
+  display.setCursor(10, 10);
+  display.println("QUIZ ESP32");
+  display.setCursor(5, 25);
+  display.println("Wokwi Edition");
+  display.setCursor(0, 45);
+  display.println("Gira encoder empezar");
+  display.display();
+}
+
+void mostrarIngresoNombre() {
+  display.clearDisplay();
+  display.setCursor(10, 10);
+  
+  if (modoActual == MODO_1VS1) {
+    if (jugador1 == -1) {
+      display.println("JUGADOR 1 - NOMBRE:");
+    } else {
+      display.println("JUGADOR 2 - NOMBRE:");
+    }
+  } else {
+    display.println("INGRESA TU NOMBRE:");
+  }
+  
+  display.setCursor(0, 25);
+  display.print("Nombre: ");
+  display.println(nombreTemp);
+  display.setCursor(0, 35);
+  display.print("Letra actual: ");
+  display.print(char(nombreTemp.length() > 0 ? nombreTemp.charAt(nombreTemp.length()-1) : 'A'));
+  display.setCursor(0, 45);
+  display.print("Click: nueva letra");
+  display.setCursor(0, 55);
+  display.print("Mantén>1s: FINALIZAR");
+  display.display();
+}
+
+void mostrarTextoEnLineas(String texto, int x, int y, int anchoMax) {
+  int inicio = 0;
+  int fin = anchoMax / 6;
+  
+  while (inicio < texto.length()) {
+    if (fin > texto.length()) fin = texto.length();
+    
+    int ultimoEspacio = texto.lastIndexOf(' ', fin);
+    if (ultimoEspacio == -1 || ultimoEspacio <= inicio) ultimoEspacio = fin;
+    
+    display.setCursor(x, y);
+    display.println(texto.substring(inicio, ultimoEspacio));
+    
+    y += 10;
+    inicio = ultimoEspacio + 1;
+    fin = inicio + (anchoMax / 6);
+  }
+}
+
+String limpiarTexto(String texto) {
+  texto.replace("á", "a");
+  texto.replace("é", "e");
+  texto.replace("í", "i");
+  texto.replace("ó", "o");
+  texto.replace("ú", "u");
+  texto.replace("ñ", "n");
+  texto.replace("¿", "?");
+  texto.replace("¡", "!");
+  return texto;
+}
+
+void mostrarPregunta() {
+  display.clearDisplay();
+  
+  // Header con información del modo y jugador
+  display.setCursor(0, 0);
+  if (modoActual == MODO_1VS1) {
+    if (turnoJugador == 0) {
+      display.print("J1:");
+      if (jugador1 >= 0) display.print(usuarios[jugador1].nombre);
+    } else {
+      display.print("J2:");
+      if (jugador2 >= 0) display.print(usuarios[jugador2].nombre);
+    }
+  } else if (usuarioActual >= 0) {
+    display.print(usuarios[usuarioActual].nombre);
+  } else {
+    display.print("JUGADOR");
+  }
+  
+  display.setCursor(70, 0);
+  display.print(preguntaActual + 1);
+  display.print("/");
+  display.print(totalPreguntas);
+  display.setCursor(100, 0);
+  
+  if (modoActual == MODO_1VS1) {
+    if (turnoJugador == 0) {
+      display.print(puntuacionJugador1);
+    } else {
+      display.print(puntuacionJugador2);
+    }
+  } else {
+    display.print(puntuacionTotal);
+  }
+  
+  // Pregunta
+  mostrarTextoEnLineas(limpiarTexto(preguntas[preguntaActual].texto), 0, 12, 128);
+  
+  // Opciones con selector
+  for(int i = 0; i < 3; i++) {
+    display.setCursor(5, 25 + i * 12);
+    if(i == opcionSeleccionada) {
+      display.print("> ");
+    } else {
+      display.print("  ");
+    }
+    display.println(preguntas[preguntaActual].opciones[i]);
+  }
+  
+  display.display();
+}
+
+void mostrarMejorRanking() {
+  Usuario* mejor = obtenerMejorRanking();
+  display.clearDisplay();
+  display.setCursor(20, 10);
+  display.println("MEJOR RANKING");
+  display.setCursor(0, 25);
+  if (mejor != nullptr) {
+    display.print("Jugador: ");
+    display.println(mejor->nombre);
+    display.print("Puntos: ");
+    display.println(mejor->puntuacionMaxima);
+    display.print("Partidas: ");
+    display.println(mejor->partidasJugadas);
+  } else {
+    display.println("No hay usuarios");
+  }
+  display.setCursor(0, 55);
+  display.println("Click para continuar");
+  display.display();
+}
+
+void mostrarResultado1vs1() {
+  display.clearDisplay();
+  display.setCursor(20, 10);
+  display.println("RESULTADO 1vs1");
+  display.setCursor(0, 25);
+  
+  if (jugador1 >= 0) {
+    display.print("J1:");
+    display.print(usuarios[jugador1].nombre);
+    display.print(":");
+    display.println(puntuacionJugador1);
+  }
+  
+  display.setCursor(0, 35);
+  if (jugador2 >= 0) {
+    display.print("J2:");
+    display.print(usuarios[jugador2].nombre);
+    display.print(":");
+    display.println(puntuacionJugador2);
+  }
+  
+  display.setCursor(0, 50);
+  if (puntuacionJugador1 > puntuacionJugador2) {
+    display.print("GANADOR: JUGADOR 1");
+  } else if (puntuacionJugador2 > puntuacionJugador1) {
+    display.print("GANADOR: JUGADOR 2");
+  } else {
+    display.print("EMPATE");
+  }
+  
+  display.display();
+}
+
+void mostrarResultado() {
+  display.clearDisplay();
+  display.setCursor(20, 10);
+  display.println("QUIZ COMPLETADO!");
+  display.setCursor(10, 25);
+  if(usuarioActual >= 0) {
+    display.print("Jugador: ");
+    display.println(usuarios[usuarioActual].nombre);
+  }
+  display.setCursor(30, 40);
+  display.print("Puntos: ");
+  display.println(puntuacionTotal);
+  display.setCursor(5, 55);
+  display.println("Click para reiniciar");
+  display.display();
+}
+
+void verificarRespuesta() {
+  bool correcta = (opcionSeleccionada == preguntas[preguntaActual].respuestaCorrecta);
+  int puntaje = preguntas[preguntaActual].puntaje;
+  
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println(preguntas[preguntaActual].texto);
+  display.setCursor(0, 15);
+  display.print("Elegiste: ");
+  display.println(preguntas[preguntaActual].opciones[opcionSeleccionada]);
+  
+  if(correcta) {
+    if (modoActual == MODO_1VS1) {
+      if (turnoJugador == 0) {
+        puntuacionJugador1 += puntaje;
+      } else {
+        puntuacionJugador2 += puntaje;
+      }
+    } else {
+      puntuacionTotal += puntaje;
+    }
+    
+    display.setCursor(0, 30);
+    display.print("CORRECTO! +");
+    display.print(puntaje);
+    digitalWrite(LED_PIN, HIGH);
+  } else {
+    display.setCursor(0, 30);
+    display.println("INCORRECTO");
+    display.setCursor(0, 45);
+    display.print("Correcta: ");
+    display.println(preguntas[preguntaActual].opciones[preguntas[preguntaActual].respuestaCorrecta]);
+  }
+  
+  display.display();
+  delay(3000);
+  digitalWrite(LED_PIN, LOW);
+  
+  preguntaActual++;
+  
+  if (modoActual == MODO_1VS1) {
+    if (preguntaActual >= totalPreguntas) {
+      // Cambiar turno o finalizar
+      if (turnoJugador == 0) {
+        // Primer jugador terminó, pasar al segundo
+        turnoJugador = 1;
+        preguntaActual = 0;
+        opcionSeleccionada = 0;
+        mostrarPregunta();
+      } else {
+        // Ambos jugadores terminaron
+        quizCompletado = true;
+        actualizarPuntuacionUsuario();
+        mostrarRanking();
+        mostrarResultado1vs1();
+      }
+    } else {
+      opcionSeleccionada = 0;
+      mostrarPregunta();
+    }
+  } else {
+    if(preguntaActual >= totalPreguntas) {
+      quizCompletado = true;
+      actualizarPuntuacionUsuario();
+      mostrarRanking();
+      mostrarResultado();
+    } else {
+      opcionSeleccionada = 0;
+      mostrarPregunta();
+    }
+  }
+}
+
+void reiniciarQuiz() {
+  preguntaActual = 0;
+  opcionSeleccionada = 0;
+  puntuacionTotal = 0;
+  puntuacionJugador1 = 0;
+  puntuacionJugador2 = 0;
+  quizCompletado = false;
+  quizIniciado = false;
+  ingresandoNombre = false;
+  nombreTemp = "";
+  usuarioActual = -1;
+  jugador1 = -1;
+  jugador2 = -1;
+  turnoJugador = 0;
+  modoActual = MODO_MENU;
+  mostrarMenuPrincipal();
+}
+
+void procesarEntradaNombre() {
+  static char letraActual = 'A';
+  static unsigned long ultimoGiro = 0;
+  static unsigned long inicioPresion = 0;
+  static bool botonPresionado = false;
+  
+  int currentCLK = digitalRead(ENCODER_CLK);
+  
+  // Manejo del encoder para cambiar letras
+  if(currentCLK != lastCLK && currentCLK == LOW) {
+    if(millis() - ultimoGiro > 150) {
+      if(digitalRead(ENCODER_DT) == LOW) {
+        letraActual++;
+      } else {
+        letraActual--;
+      }
+      
+      if(letraActual < 'A') letraActual = 'Z';
+      if(letraActual > 'Z') letraActual = 'A';
+      
+      if(nombreTemp.length() > 0) {
+        nombreTemp.remove(nombreTemp.length() - 1);
+      }
+      nombreTemp += String(letraActual);
+      
+      mostrarIngresoNombre();
+      ultimoGiro = millis();
+    }
+  }
+  lastCLK = currentCLK;
+  
+  // Manejo del botón
+  if(digitalRead(ENCODER_SW) == LOW) {
+    if(!botonPresionado) {
+      botonPresionado = true;
+      inicioPresion = millis();
+    }
+    
+    if(botonPresionado && (millis() - inicioPresion > 1000)) {
+      // PRESIÓN LARGA - Finalizar nombre
+      if(nombreTemp.length() > 0) {
+        if (modoActual == MODO_1VS1) {
+          if (jugador1 == -1) {
+            // Primer jugador
+            int usuarioExistente = buscarUsuario(nombreTemp);
+            if(usuarioExistente == -1) {
+              agregarUsuario(nombreTemp);
+              jugador1 = usuarioActual;
+            } else {
+              jugador1 = usuarioExistente;
+              usuarioActual = usuarioExistente;
+            }
+            Serial.println("Jugador 1: " + nombreTemp);
+            
+            // Preparar para segundo jugador
+            nombreTemp = "A";
+            ingresandoNombre = true;
+            mostrarIngresoNombre();
+          } else {
+            // Segundo jugador
+            int usuarioExistente = buscarUsuario(nombreTemp);
+            if(usuarioExistente == -1) {
+              agregarUsuario(nombreTemp);
+              jugador2 = usuarioActual;
+            } else {
+              jugador2 = usuarioExistente;
+              usuarioActual = usuarioExistente;
+            }
+            Serial.println("Jugador 2: " + nombreTemp);
+            
+            // Iniciar juego 1vs1
+            ingresandoNombre = false;
+            quizIniciado = true;
+            usuarioActual = jugador1; // Empezar con jugador 1
+            turnoJugador = 0;
+            mostrarPregunta();
+          }
+        } else {
+          // Modos normales
+          int usuarioExistente = buscarUsuario(nombreTemp);
+          if(usuarioExistente == -1) {
+            agregarUsuario(nombreTemp);
+          } else {
+            usuarioActual = usuarioExistente;
+            Serial.println("Usuario existente: " + nombreTemp);
+          }
+          
+          if (modoActual == MODO_RANKING) {
+            mostrarMejorRanking();
+            delay(2000);
+          }
+          
+          ingresandoNombre = false;
+          quizIniciado = true;
+          mostrarPregunta();
+        }
+        botonPresionado = false;
+      }
+    }
+  } else {
+    if(botonPresionado) {
+      if(millis() - inicioPresion <= 1000) {
+        if(nombreTemp.length() == 0) {
+          nombreTemp = "A";
+          letraActual = 'A';
+          mostrarIngresoNombre();
+        } else if(nombreTemp.length() < 8) {
+          nombreTemp += "A";
+          letraActual = 'A';
+          mostrarIngresoNombre();
+        }
+      }
+      botonPresionado = false;
+    }
+  }
+}
+
+void procesarMenuPrincipal() {
+  int currentCLK = digitalRead(ENCODER_CLK);
+  
+  if(currentCLK != lastCLK && currentCLK == LOW) {
+    if(digitalRead(ENCODER_DT) == LOW) {
+      opcionSeleccionada++;
+    } else {
+      opcionSeleccionada--;
+    }
+    
+    if(opcionSeleccionada < 0) opcionSeleccionada = 2;
+    if(opcionSeleccionada > 2) opcionSeleccionada = 0;
+    
+    mostrarMenuPrincipal();
+  }
+  lastCLK = currentCLK;
+  
+  if(digitalRead(ENCODER_SW) == LOW && millis() - lastButtonPress > 300) {
+    lastButtonPress = millis();
+    
+    // Seleccionar modo según opción
+    switch(opcionSeleccionada) {
+      case 0:
+        modoActual = MODO_1VS1;
+        Serial.println("1vs1");
+        break;
+      case 1:
+        modoActual = MODO_RANKING;
+        Serial.println("Vs Mejor Ranking");
+        break;
+      case 2:
+        modoActual = MODO_MULTIJUGADOR;
+        Serial.println("Multijugador");
+        break;
+    }
+    
+    ingresandoNombre = true;
+    nombreTemp = "A";
+    mostrarIngresoNombre();
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(ENCODER_CLK, INPUT_PULLUP);
+  pinMode(ENCODER_DT, INPUT_PULLUP);
+  pinMode(ENCODER_SW, INPUT_PULLUP);
+  
+  display.begin(0x3c, true);
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+  display.clearDisplay();
+  
+  simularCargaArchivos();
+  inicializarUsuariosEjemplo();
+  
+  mostrarMenuPrincipal();
+  Serial.println("Sistema listo - Selecciona modo de juego");
+}
+
+void loop() {
+  int currentCLK = digitalRead(ENCODER_CLK);
+  
+  if (modoActual == MODO_MENU) {
+    procesarMenuPrincipal();
+    return;
+  }
+  
+  if(ingresandoNombre) {
+    procesarEntradaNombre();
+    return;
+  }
+  
+  if(quizCompletado) {
+    if(digitalRead(ENCODER_SW) == LOW && millis() - lastButtonPress > 500) {
+      lastButtonPress = millis();
+      reiniciarQuiz();
+    }
+    return;
+  }
+  
+  if(!quizIniciado) {
+    if(currentCLK != lastCLK) {
+      ingresandoNombre = true;
+      nombreTemp = "A";
+      mostrarIngresoNombre();
+    }
+    lastCLK = currentCLK;
+    return;
+  }
+  
+  // Navegación normal del quiz
+  if(currentCLK != lastCLK && currentCLK == LOW) {
+    if(digitalRead(ENCODER_DT) == LOW) {
+      opcionSeleccionada++;
+    } else {
+      opcionSeleccionada--;
+    }
+    
+    if(opcionSeleccionada < 0) opcionSeleccionada = 2;
+    if(opcionSeleccionada > 2) opcionSeleccionada = 0;
+    
+    mostrarPregunta();
+  }
+  lastCLK = currentCLK;
+  
+  if(digitalRead(ENCODER_SW) == LOW && millis() - lastButtonPress > 300) {
+    lastButtonPress = millis();
+    verificarRespuesta();
+  }
+}
+
+
+//Se me ocurrio para solucionar el problema de las preguntas muy largar hacer que en la oled las preguntas se muestren deslizando de derecha a izquierda como hacen los carteles led
+
