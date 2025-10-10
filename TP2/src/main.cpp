@@ -2,6 +2,9 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
+#include <WiFi.h>
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
 
 // OLED
 #define SCREEN_WIDTH 128
@@ -14,8 +17,16 @@ Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 #define ENCODER_DT 5
 #define ENCODER_SW 19
 
-// Estructuras de datos --> creo una estructura para que todo
-// lo relacionado a la pregunta y al usuario este junto y pueda acceder facilmente
+// WiFi y Telegram
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+const String BOT_TOKEN = "8376405384:AAH_30BV0A7zlZotdfKpx3KucxvUtSanau8";  // REEMPLAZA CON TU TOKEN
+const String CHAT_ID = "Quizz3_bot";      // REEMPLAZA CON TU CHAT ID
+
+WiFiClient client;
+UniversalTelegramBot bot(BOT_TOKEN, client);
+
+// Estructuras de datos
 struct Pregunta {
   String texto;
   String opciones[3];
@@ -29,7 +40,7 @@ struct Usuario {
   int partidasJugadas;
 };
 
-// SIMULACIÓN DE ARCHIVOS - Contenido de preguntas.txt --> en el real esto iria en un archivo
+// SIMULACIÓN DE ARCHIVOS - Contenido de preguntas.txt
 const char* ARCHIVO_PREGUNTAS[] = {
   "¿Qué lenguaje usa Arduino?;C++;Python;Java;0",
   "Capital de Francia;Roma;Madrid;París;2", 
@@ -38,28 +49,193 @@ const char* ARCHIVO_PREGUNTAS[] = {
   "Animal Australia;Canguro;Koala;Emú;0"
 };
 
-// SIMULACIÓN DE ARCHIVOS - Contenido de puntajes.txt --> iria en un archivo 
+// SIMULACIÓN DE ARCHIVOS - Contenido de puntajes.txt
 const int ARCHIVO_PUNTAJES[] = {10, 15, 10, 5, 10};
 
 // Variables globales
-Pregunta preguntas[10]; // tengo un array con 10 preguntas, el struct 
-Usuario usuarios[20]; // tengo un array con 20 usuarios como max 
-int totalPreguntas = 5; // se muestran 5 de las 10 preguntas
-int totalUsuarios = 0; // no hay ningun usuario registrado
-int preguntaActual = 0; // en que pregunta estoy
-int opcionSeleccionada = 0; // que opcion seleccione 
-int puntuacionTotal = 0; // suma de la puntuacion obtenida
-int usuarioActual = -1; // en que usuario estoy (-1 = ninguno)
-bool quizCompletado = false; // se pone en true cuando se completa el quiz
-bool quizIniciado = false; // se pone en true cuando giro el encoder para emprezar el quizz
-bool ingresandoNombre = false; // true cuando estoy ingresando el nombre
-String nombreTemp = ""; // aca se guarda el nombre que voy ingresando
+Pregunta preguntas[10];
+Usuario usuarios[20];
+int totalPreguntas = 5;
+int totalUsuarios = 0;
+int preguntaActual = 0;
+int opcionSeleccionada = 0;
+int puntuacionTotal = 0;
+int usuarioActual = -1;
+bool quizCompletado = false;
+bool quizIniciado = false;
+bool ingresandoNombre = false;
+String nombreTemp = "";
+String modoPartida = "";  // Para almacenar el modo de partida
 
 // Variables encoder
 int lastCLK = HIGH;
 unsigned long lastButtonPress = 0;
 
-// FUNCIONES DE SIMULACIÓN DE ARCHIVOS
+// Variables Telegram
+unsigned long lastTimeBotRan = 0;
+bool telegramConnected = false;
+
+// ==================== FUNCIONES TELEGRAM ====================
+
+void conectarTelegram() {
+  Serial.println("Conectando a WiFi...");
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("Conectando WiFi...");
+  display.display();
+  
+  WiFi.begin(ssid, password);
+  
+  int intentos = 0;
+  while (WiFi.status() != WL_CONNECTED && intentos < 20) {
+    delay(1000);
+    Serial.print(".");
+    intentos++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConectado a WiFi!");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+    
+    // Verificar conexión con Telegram
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("Conectando Telegram...");
+    display.display();
+    
+    int botUsuarios = bot.getUpdates(bot.last_message_received + 1);
+    if (botUsuarios != -1) {
+      telegramConnected = true;
+      Serial.println("Conexión con Telegram exitosa!");
+      
+      // Enviar mensaje de inicio
+      bot.sendMessage(CHAT_ID, "🤖 ¡Bot del Quiz ESP32 conectado! 🎮", "");
+      bot.sendMessage(CHAT_ID, "Usa /seleccionar_partida para elegir modo de juego", "");
+      
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("Telegram OK!");
+      display.setCursor(0, 20);
+      display.println("Usa /seleccionar_partida");
+      display.display();
+      delay(2000);
+    } else {
+      Serial.println("Error en conexión Telegram");
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("Error Telegram");
+      display.display();
+      delay(2000);
+    }
+  } else {
+    Serial.println("\nError conectando a WiFi");
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("Error WiFi");
+    display.display();
+    delay(2000);
+  }
+}
+
+void procesarComandosTelegram() {
+  if (!telegramConnected) return;
+
+  int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  
+  while (numNewMessages) {
+    Serial.println("Mensaje recibido de Telegram");
+    
+    for (int i = 0; i < numNewMessages; i++) {
+      String chat_id = String(bot.messages[i].chat_id);
+      String text = bot.messages[i].text;
+      
+      Serial.println("Mensaje: " + text);
+      
+      // Solo responder al chat ID autorizado
+      if (chat_id == CHAT_ID) {
+        if (text == "/start" || text == "/help") {
+          String welcome = "🎮 *Quiz ESP32 - Comandos disponibles:*\n";
+          welcome += "/seleccionar_partida - Elegir modo de juego\n";
+          welcome += "/iniciar_partida - Comenzar partida\n";
+          welcome += "/ranking - Ver ranking actual\n";
+          welcome += "/estado - Estado actual del juego\n";
+          welcome += "/help - Ver esta ayuda";
+          bot.sendMessage(chat_id, welcome, "Markdown");
+        }
+        else if (text == "/estado") {
+          String estado = "📊 *Estado Actual:*\n";
+          estado += "Modo: " + (modoPartida == "" ? "No seleccionado" : modoPartida) + "\n";
+          estado += "Quiz: " + String(quizIniciado ? "En curso" : "No iniciado") + "\n";
+          estado += "Pregunta: " + String(preguntaActual + 1) + "/" + String(totalPreguntas) + "\n";
+          estado += "Puntuación: " + String(puntuacionTotal) + "\n";
+          estado += "Usuario: " + (usuarioActual >= 0 ? usuarios[usuarioActual].nombre : "No seleccionado");
+          bot.sendMessage(chat_id, estado, "Markdown");
+        }
+        else if (text == "/ranking") {
+          String rankingMsg = "🏆 *Ranking Actual:*\n";
+          for(int i = 0; i < (totalUsuarios < 5 ? totalUsuarios : 5); i++) {
+            rankingMsg += String(i+1) + ". " + usuarios[i].nombre + " - " + 
+                         String(usuarios[i].puntuacionMaxima) + " pts\n";
+          }
+          if (totalUsuarios == 0) {
+            rankingMsg += "No hay usuarios registrados";
+          }
+          bot.sendMessage(chat_id, rankingMsg, "Markdown");
+        }
+        else if (text.startsWith("/seleccionar_partida")) {
+          if (text.length() > 21) {
+            String modo = text.substring(21);
+            modo.toLowerCase();
+            modo.trim();
+            
+            if (modo == "1vs1" || modo == "ranking" || modo == "multijugador") {
+              modoPartida = modo;
+              bot.sendMessage(chat_id, "✅ Modo seleccionado: *" + modo + "*", "Markdown");
+              
+              // Actualizar pantalla
+              display.clearDisplay();
+              display.setCursor(0, 0);
+              display.println("MODO SELECCIONADO:");
+              display.setCursor(0, 20);
+              display.println(modo);
+              display.setCursor(0, 40);
+              display.println("Gira encoder empezar");
+              display.display();
+              
+              Serial.println("Modo de partida seleccionado: " + modo);
+            } else {
+              bot.sendMessage(chat_id, "❌ Modos válidos: 1vs1, ranking, multijugador", "Markdown");
+            }
+          } else {
+            String ayuda = "🎮 *Selecciona modo de partida:*\n";
+            ayuda += "/seleccionar_partida 1vs1\n";
+            ayuda += "/seleccionar_partida ranking\n"; 
+            ayuda += "/seleccionar_partida multijugador";
+            bot.sendMessage(chat_id, ayuda, "Markdown");
+          }
+        }
+        else if (text == "/iniciar_partida") {
+          if (modoPartida == "") {
+            bot.sendMessage(chat_id, "❌ Primero selecciona un modo con /seleccionar_partida", "Markdown");
+          } else if (!quizIniciado && !ingresandoNombre) {
+            bot.sendMessage(chat_id, "🎮 Iniciando partida en modo: *" + modoPartida + "*", "Markdown");
+            // El quiz se inicia cuando el usuario gira el encoder
+          } else {
+            bot.sendMessage(chat_id, "⚠️ El juego ya está en curso", "Markdown");
+          }
+        }
+        else {
+          bot.sendMessage(chat_id, "❌ Comando no reconocido. Usa /help para ver comandos disponibles.", "Markdown");
+        }
+      }
+    }
+    numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  }
+}
+
+// ==================== FUNCIONES EXISTENTES DEL QUIZ ====================
+
 void simularCargaArchivos() {
   Serial.println("=== SIMULANDO SISTEMA DE ARCHIVOS ===");
   Serial.println("Cargando preguntas desde 'preguntas.txt'...");
@@ -91,33 +267,6 @@ void simularCargaArchivos() {
   Serial.println("Total: " + String(totalPreguntas) + " preguntas cargadas\n");
 }
 
-//Funcion de menu que miestra disitontos tipos de partida que se pueden jugar: 1vs1, jugar contra el mejor ranking y multijugador(hasta 20 jugadores)
-/*
-// --- Función para mostrar el menú ---
-void mostrarMenu() {
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println("Selecciona modo:");
-  
-  String opciones[3] = {"1vs1", "Ranking", "Multijugador"};
-
-  for (int i = 0; i < 3; i++) {
-    if (i == opcionSeleccionada) {
-      display.print("> ");
-    } else {
-      display.print("  ");
-    }
-    display.println(opciones[i]);
-  }
-
-  display.display();
-}
-*/
-
-// FUNCIONES DE USUARIOS (para Wokwi) .-> mi idea es no tener ninguno al inicio y 
-// que se vayan guardando a medida que voy jugando 
 void inicializarUsuariosEjemplo() {
   // Agregar algunos usuarios de ejemplo
   usuarios[0] = {"ANA", 45, 3};
@@ -149,6 +298,11 @@ void agregarUsuario(String nombre) {
     usuarioActual = totalUsuarios;
     totalUsuarios++;
     Serial.println("Nuevo usuario creado: " + nombre);
+    
+    // Notificar a Telegram
+    if (telegramConnected) {
+      bot.sendMessage(CHAT_ID, "👤 Nuevo usuario registrado: *" + nombre + "*", "Markdown");
+    }
   }
 }
 
@@ -161,6 +315,15 @@ void actualizarPuntuacionUsuario() {
     Serial.println("Usuario " + usuarios[usuarioActual].nombre + 
                   " actualizado. Max: " + usuarios[usuarioActual].puntuacionMaxima +
                   " Partidas: " + usuarios[usuarioActual].partidasJugadas);
+    
+    // Notificar a Telegram
+    if (telegramConnected) {
+      String msg = "🏆 *Actualización de Usuario:*\n";
+      msg += "Jugador: " + usuarios[usuarioActual].nombre + "\n";
+      msg += "Puntuación máxima: " + String(usuarios[usuarioActual].puntuacionMaxima) + "\n";
+      msg += "Partidas jugadas: " + String(usuarios[usuarioActual].partidasJugadas);
+      bot.sendMessage(CHAT_ID, msg, "Markdown");
+    }
   }
 }
 
@@ -172,22 +335,18 @@ void mostrarRanking() {
     rankingTemp[i] = usuarios[i];
   }
   
-  // ORDENAR MEJORADO --> aca me lo ordena primero x puntuacion maxima y 
-  // si tienen la misma puntuacion, el que tiene mas partidas jugadas va primero
+  // ORDENAR MEJORADO
   for(int i = 0; i < totalUsuarios - 1; i++) {
     for(int j = i + 1; j < totalUsuarios; j++) {
       bool debeIntercambiar = false;
       
-      // Criterio 1: Puntuación máxima
       if(rankingTemp[j].puntuacionMaxima > rankingTemp[i].puntuacionMaxima) {
         debeIntercambiar = true;
       }
-      // Criterio 2: Si misma puntuación, más partidas
       else if(rankingTemp[j].puntuacionMaxima == rankingTemp[i].puntuacionMaxima) {
         if(rankingTemp[j].partidasJugadas > rankingTemp[i].partidasJugadas) {
           debeIntercambiar = true;
         }
-        // Criterio 3: Si mismo todo, orden alfabético
         else if(rankingTemp[j].partidasJugadas == rankingTemp[i].partidasJugadas) {
           if(rankingTemp[j].nombre < rankingTemp[i].nombre) {
             debeIntercambiar = true;
@@ -206,7 +365,7 @@ void mostrarRanking() {
   // MOSTRAR
   for(int i = 0; i < totalUsuarios; i++) {
     String posicion = String(i+1) + ".";
-    if(i < 9) posicion = " " + posicion; // Alinear números
+    if(i < 9) posicion = " " + posicion;
     
     Serial.println(posicion + " " + rankingTemp[i].nombre + 
                   " - Puntos: " + rankingTemp[i].puntuacionMaxima +
@@ -215,19 +374,27 @@ void mostrarRanking() {
   Serial.println("=====================");
 }
 
-// FUNCIONES DE INTERFAZ
 void mostrarPantallaInicio() {
   display.clearDisplay();
   display.setCursor(10, 10);
   display.println("QUIZ ESP32");
   display.setCursor(5, 25);
-  display.println("Wokwi Edition");
-  display.setCursor(0, 45);
-  display.println("Gira encoder empezar");
+  display.println("Telegram Bot");
+  
+  if (modoPartida != "") {
+    display.setCursor(0, 40);
+    display.print("Modo: ");
+    display.println(modoPartida);
+    display.setCursor(0, 55);
+    display.println("Gira encoder empezar");
+  } else {
+    display.setCursor(0, 45);
+    display.println("Usa Telegram para");
+    display.setCursor(0, 55);
+    display.println("seleccionar modo");
+  }
   display.display();
 }
-
-// pagina que se muestra cuando estoy ingresando el nombre 
 
 void mostrarIngresoNombre() {
   display.clearDisplay();
@@ -294,7 +461,7 @@ void mostrarPregunta() {
   display.setCursor(100, 0);
   display.print(puntuacionTotal);
   
-  // Pregunta --> intento que se vean bien las preguntas largas --> no lo logro todavia 
+  // Pregunta
   mostrarTextoEnLineas(limpiarTexto(preguntas[preguntaActual].texto), 0, 12, 128);
   
   // Opciones con selector
@@ -344,12 +511,24 @@ void verificarRespuesta() {
     display.print("CORRECTO! +");
     display.print(preguntas[preguntaActual].puntaje);
     digitalWrite(LED_PIN, HIGH);
+    
+    // Notificar a Telegram
+    if (telegramConnected) {
+      bot.sendMessage(CHAT_ID, "✅ ¡Respuesta correcta! +" + 
+                     String(preguntas[preguntaActual].puntaje) + " puntos", "");
+    }
   } else {
     display.setCursor(0, 30);
     display.println("INCORRECTO");
     display.setCursor(0, 45);
     display.print("Correcta: ");
     display.println(preguntas[preguntaActual].opciones[preguntas[preguntaActual].respuestaCorrecta]);
+    
+    // Notificar a Telegram
+    if (telegramConnected) {
+      bot.sendMessage(CHAT_ID, "❌ Respuesta incorrecta. La correcta era: " + 
+                     preguntas[preguntaActual].opciones[preguntas[preguntaActual].respuestaCorrecta], "");
+    }
   }
   
   display.display();
@@ -362,6 +541,15 @@ void verificarRespuesta() {
     actualizarPuntuacionUsuario();
     mostrarRanking();
     mostrarResultado();
+    
+    // Enviar resultado final a Telegram
+    if (telegramConnected) {
+      String resultado = "🏁 *QUIZ COMPLETADO!*\n";
+      resultado += "Jugador: " + (usuarioActual >= 0 ? usuarios[usuarioActual].nombre : "Anónimo") + "\n";
+      resultado += "Puntuación final: *" + String(puntuacionTotal) + "* puntos\n";
+      resultado += "Modo de juego: " + modoPartida;
+      bot.sendMessage(CHAT_ID, resultado, "Markdown");
+    }
   } else {
     opcionSeleccionada = 0;
     mostrarPregunta();
@@ -377,7 +565,13 @@ void reiniciarQuiz() {
   ingresandoNombre = false;
   nombreTemp = "";
   usuarioActual = -1;
+  // No reiniciamos modoPartida para mantener la selección
   mostrarPantallaInicio();
+  
+  // Notificar a Telegram
+  if (telegramConnected) {
+    bot.sendMessage(CHAT_ID, "🔄 Quiz reiniciado. Listo para nueva partida en modo: *" + modoPartida + "*", "Markdown");
+  }
 }
 
 void procesarEntradaNombre() {
@@ -400,7 +594,6 @@ void procesarEntradaNombre() {
       if(letraActual < 'A') letraActual = 'Z';
       if(letraActual > 'Z') letraActual = 'A';
       
-      // Actualizar última letra del nombre temporal --> quiero que se vayan guardando en un archivo ordenado Uusuario Puntaje NRanking --> en el real
       if(nombreTemp.length() > 0) {
         nombreTemp.remove(nombreTemp.length() - 1);
       }
@@ -414,13 +607,11 @@ void procesarEntradaNombre() {
   
   // Manejo del botón
   if(digitalRead(ENCODER_SW) == LOW) {
-    // Botón recién presionado
     if(!botonPresionado) {
       botonPresionado = true;
       inicioPresion = millis();
     }
     
-    // Verificar si se mantuvo presionado por más de 1 segundo
     if(botonPresionado && (millis() - inicioPresion > 1000)) {
       // PRESIÓN LARGA - Finalizar nombre
       if(nombreTemp.length() > 0) {
@@ -436,12 +627,15 @@ void procesarEntradaNombre() {
         quizIniciado = true;
         botonPresionado = false;
         mostrarPregunta();
+        
+        // Notificar a Telegram
+        if (telegramConnected) {
+          bot.sendMessage(CHAT_ID, "🎮 Partida iniciada!\nJugador: *" + nombreTemp + "*\nModo: *" + modoPartida + "*", "Markdown");
+        }
       }
     }
   } else {
-    // Botón liberado
     if(botonPresionado) {
-      // Fue un CLICK CORTO - Agregar nueva letra
       if(millis() - inicioPresion <= 1000) {
         if(nombreTemp.length() == 0) {
           nombreTemp = "A";
@@ -452,7 +646,6 @@ void procesarEntradaNombre() {
           letraActual = 'A';
           mostrarIngresoNombre();
         }
-        // Si llegó al máximo, el click corto no hace nada
       }
       botonPresionado = false;
     }
@@ -460,7 +653,7 @@ void procesarEntradaNombre() {
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
   
   pinMode(LED_PIN, OUTPUT);
   pinMode(ENCODER_CLK, INPUT_PULLUP);
@@ -472,19 +665,23 @@ void setup() {
   display.setTextColor(SH110X_WHITE);
   display.clearDisplay();
   
+  // Conectar a Telegram
+  conectarTelegram();
+  
   simularCargaArchivos();
   inicializarUsuariosEjemplo();
-
   
   mostrarPantallaInicio();
-  Serial.println("Quiz listo - Gira encoder para comenzar");
-
-  //mostrar menu de opciones de partida antes de iniciar el juego: 1vs1, ranking y multijugador
-  // mostrarMenu();
-
+  Serial.println("Sistema listo. Usa Telegram para controlar.");
 }
 
 void loop() {
+  // Procesar comandos de Telegram cada segundo
+  if (millis() > lastTimeBotRan + 1000) {
+    procesarComandosTelegram();
+    lastTimeBotRan = millis();
+  }
+  
   int currentCLK = digitalRead(ENCODER_CLK);
   
   if(ingresandoNombre) {
@@ -499,46 +696,9 @@ void loop() {
     }
     return;
   }
-
-  //aca en el loop en esta parte se maneja el tema de la seleccion del tipo de partida
-  /*
-
-  Le faltaria que cuando se elige un 1vs1 solo se permita la carga de dos usuarios, que si se elegige jugar contra el mejor ranking seleccionado anteriormente 
-  se muestre este y para el multijugador no haria falta nada mas que lo que ya tenemos
-
-  // --- Navegación con botones ---
-  if (digitalRead(BTN_UP) == LOW) {
-    opcionSeleccionada = (opcionSeleccionada - 1 + 3) % 3;
-    mostrarMenu();
-    delay(200);
-  }
-  if (digitalRead(BTN_DOWN) == LOW) {
-    opcionSeleccionada = (opcionSeleccionada + 1) % 3;
-    mostrarMenu();
-    delay(200);
-  }
-  if (digitalRead(BTN_OK) == LOW) {
-    String opciones[3] = {"1vs1", "ranking", "multijugador"};
-    modoPartida = opciones[opcionSeleccionada];
-    client.publish(topic, ("modo:" + modoPartida).c_str());
-    Serial.println("Modo elegido manualmente: " + modoPartida);
-    delay(200);
-  }
-
-  // Si ya se eligió modo, mostrar confirmación
-  if (modoPartida != "") {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setCursor(10, 20);
-    display.print("Modo seleccionado:");
-    display.setCursor(30, 40);
-    display.print(modoPartida);
-    display.display();
-  }
-  */
   
   if(!quizIniciado) {
-    if(currentCLK != lastCLK) {
+    if(currentCLK != lastCLK && modoPartida != "") {
       ingresandoNombre = true;
       nombreTemp = "A";
       mostrarIngresoNombre();

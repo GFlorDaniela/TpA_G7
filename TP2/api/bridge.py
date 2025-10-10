@@ -3,7 +3,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import requests
 
-TOKEN = "8238234652:AAEVwkqELgLiu8f_RpWsZlKfxq9azuSubUI"
+TOKEN = "8376405384:AAH_30BV0A7zlZotdfKpx3KucxvUtSanau8"
 MQTT_SERVER = "test.mosquitto.org"
 TOPIC = "wokwi/acciones"
 API_URL = "http://tu_api.com/accion"
