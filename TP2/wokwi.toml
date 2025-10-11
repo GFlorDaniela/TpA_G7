@@ -10,3 +10,6 @@ elf = '.pio/build/esp32dev/firmware.elf'
 
 [[panel]]
 type = "wokwi-pi-pico"
+
+[[net]]
+groups = ["wifi"]

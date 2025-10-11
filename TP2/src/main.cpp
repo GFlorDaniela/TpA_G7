@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <UniversalTelegramBot.h>
 #include <ArduinoJson.h>
+#include <PubSubClient.h>
 
 // OLED
 #define SCREEN_WIDTH 128
@@ -20,13 +21,18 @@ Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // WiFi y Telegram
 const char* ssid = "Wokwi-GUEST";
 const char* password = "";
+const char* mqtt_server = "test.mosquitto.org";
+const int mqtt_port = 1883;
+
+// Telegram
 const String BOT_TOKEN = "8376405384:AAH_30BV0A7zlZotdfKpx3KucxvUtSanau8";  // REEMPLAZA CON TU TOKEN
-const String CHAT_ID = "Quizz3_bot";      // REEMPLAZA CON TU CHAT ID
+const String CHAT_ID = "1307295110";      // REEMPLAZA CON TU CHAT ID
 
 WiFiClient client;
+PubSubClient mqttClient(client);
 UniversalTelegramBot bot(BOT_TOKEN, client);
 
-// Estructuras de datos
+// ==================== ESTRUCTURAS DE DATOS ====================
 struct Pregunta {
   String texto;
   String opciones[3];
@@ -52,7 +58,7 @@ const char* ARCHIVO_PREGUNTAS[] = {
 // SIMULACIÓN DE ARCHIVOS - Contenido de puntajes.txt
 const int ARCHIVO_PUNTAJES[] = {10, 15, 10, 5, 10};
 
-// Variables globales
+// ==================== VARIABLES GLOBALES ====================
 Pregunta preguntas[10];
 Usuario usuarios[20];
 int totalPreguntas = 5;
@@ -75,10 +81,93 @@ unsigned long lastButtonPress = 0;
 unsigned long lastTimeBotRan = 0;
 bool telegramConnected = false;
 
+// ==================== PROTOTIPOS DE FUNCIONES ====================
+void mostrarIngresoNombre();
+void mostrarPantallaInicio();
+void mostrarPregunta();
+void simularCargaArchivos();
+void inicializarUsuariosEjemplo();
+int buscarUsuario(String nombre);
+void agregarUsuario(String nombre);
+void actualizarPuntuacionUsuario();
+void mostrarRanking();
+void mostrarResultado();
+void verificarRespuesta();
+void reiniciarQuiz();
+void procesarEntradaNombre();
+void mostrarTextoEnLineas(String texto, int x, int y, int anchoMax);
+String limpiarTexto(String texto);
+
+// ==================== FUNCIONES MQTT ====================
+
+void callbackMQTT(char* topic, byte* payload, unsigned int length) {
+  Serial.print("📨 Mensaje MQTT recibido [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  
+  String mensaje = "";
+  for (int i = 0; i < length; i++) {
+    mensaje += (char)payload[i];
+  }
+  Serial.println(mensaje);
+  
+  // Procesar comandos del bot de Telegram
+  if (mensaje == "iniciar_partida") {
+    Serial.println("🎮 Comando: iniciar_partida");
+    if (modoPartida != "" && !quizIniciado && !ingresandoNombre) {
+      ingresandoNombre = true;
+      nombreTemp = "A";
+      mostrarIngresoNombre();
+    }
+  } 
+  else if (mensaje.startsWith("modo:")) {
+    String nuevoModo = mensaje.substring(5);
+    nuevoModo.toLowerCase();
+    
+    if (nuevoModo == "1vs1" || nuevoModo == "ranking" || nuevoModo == "multijugador") {
+      modoPartida = nuevoModo;
+      Serial.println("🎯 Modo MQTT recibido: " + modoPartida);
+      
+      // Actualizar pantalla
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("MODO SELECCIONADO:");
+      display.setCursor(0, 20);
+      display.println(modoPartida);
+      display.setCursor(0, 40);
+      display.println("Gira encoder empezar");
+      display.display();
+      
+      // Notificar por Telegram
+      if (telegramConnected) {
+        bot.sendMessage(CHAT_ID, "✅ Modo recibido en ESP32: *" + modoPartida + "*", "Markdown");
+      }
+    }
+  }
+}
+
+void reconnectMQTT() {
+  while (!mqttClient.connected()) {
+    Serial.print("🔌 Conectando a MQTT...");
+    String clientId = "ESP32Client-" + String(random(0xffff), HEX);
+    
+    if (mqttClient.connect(clientId.c_str())) {
+      Serial.println("✅ Conectado MQTT!");
+      mqttClient.subscribe("wokwi/acciones");
+      Serial.println("📡 Suscrito a: wokwi/acciones");
+    } else {
+      Serial.print("❌ Falló, rc=");
+      Serial.print(mqttClient.state());
+      Serial.println(" reintento en 5s");
+      delay(5000);
+    }
+  }
+}
+
 // ==================== FUNCIONES TELEGRAM ====================
 
 void conectarTelegram() {
-  Serial.println("Conectando a WiFi...");
+  Serial.println("📶 Conectando a WiFi...");
   display.clearDisplay();
   display.setCursor(0, 0);
   display.println("Conectando WiFi...");
@@ -94,9 +183,13 @@ void conectarTelegram() {
   }
   
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nConectado a WiFi!");
-    Serial.print("IP: ");
+    Serial.println("\n✅ Conectado a WiFi!");
+    Serial.print("📡 IP: ");
     Serial.println(WiFi.localIP());
+    
+    // Configurar MQTT después de WiFi
+    mqttClient.setServer(mqtt_server, mqtt_port);
+    mqttClient.setCallback(callbackMQTT);
     
     // Verificar conexión con Telegram
     display.clearDisplay();
@@ -107,7 +200,7 @@ void conectarTelegram() {
     int botUsuarios = bot.getUpdates(bot.last_message_received + 1);
     if (botUsuarios != -1) {
       telegramConnected = true;
-      Serial.println("Conexión con Telegram exitosa!");
+      Serial.println("✅ Conexión con Telegram exitosa!");
       
       // Enviar mensaje de inicio
       bot.sendMessage(CHAT_ID, "🤖 ¡Bot del Quiz ESP32 conectado! 🎮", "");
@@ -121,7 +214,7 @@ void conectarTelegram() {
       display.display();
       delay(2000);
     } else {
-      Serial.println("Error en conexión Telegram");
+      Serial.println("❌ Error en conexión Telegram");
       display.clearDisplay();
       display.setCursor(0, 0);
       display.println("Error Telegram");
@@ -129,7 +222,7 @@ void conectarTelegram() {
       delay(2000);
     }
   } else {
-    Serial.println("\nError conectando a WiFi");
+    Serial.println("\n❌ Error conectando a WiFi");
     display.clearDisplay();
     display.setCursor(0, 0);
     display.println("Error WiFi");
@@ -139,12 +232,50 @@ void conectarTelegram() {
 }
 
 void procesarComandosTelegram() {
+  if (!telegramConnected) {
+    Serial.println("❌ Telegram no conectado");
+    return;
+  }
+
+  Serial.println("🔍 Buscando mensajes de Telegram...");
+  int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  Serial.print("📱 Mensajes encontrados: ");
+  Serial.println(numNewMessages);
+  
+  while (numNewMessages) {
+    Serial.println("💬 Mensaje recibido de Telegram");
+    
+    for (int i = 0; i < numNewMessages; i++) {
+      String chat_id = String(bot.messages[i].chat_id);
+      String text = bot.messages[i].text;
+      
+      Serial.print("👤 Chat ID: ");
+      Serial.println(chat_id);
+      Serial.print("📝 Mensaje: ");
+      Serial.println(text);
+      Serial.print("✅ Chat ID esperado: ");
+      Serial.println(CHAT_ID);
+      
+      // Solo responder al chat ID autorizado
+      if (chat_id == CHAT_ID) {
+        Serial.println("🎯 Mensaje autorizado - procesando...");
+        // ... resto del código de comandos
+      } else {
+        Serial.println("❌ Chat ID no autorizado");
+      }
+    }
+    numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  }
+}
+
+/*
+void procesarComandosTelegram() {
   if (!telegramConnected) return;
 
   int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
   
   while (numNewMessages) {
-    Serial.println("Mensaje recibido de Telegram");
+    Serial.println("💬 Mensaje recibido de Telegram");
     
     for (int i = 0; i < numNewMessages; i++) {
       String chat_id = String(bot.messages[i].chat_id);
@@ -193,6 +324,12 @@ void procesarComandosTelegram() {
               modoPartida = modo;
               bot.sendMessage(chat_id, "✅ Modo seleccionado: *" + modo + "*", "Markdown");
               
+              // Enviar modo por MQTT al ESP32
+              if (mqttClient.connected()) {
+                mqttClient.publish("wokwi/acciones", ("modo:" + modo).c_str());
+                Serial.println("📤 Modo enviado por MQTT: " + modo);
+              }
+              
               // Actualizar pantalla
               display.clearDisplay();
               display.setCursor(0, 0);
@@ -220,7 +357,12 @@ void procesarComandosTelegram() {
             bot.sendMessage(chat_id, "❌ Primero selecciona un modo con /seleccionar_partida", "Markdown");
           } else if (!quizIniciado && !ingresandoNombre) {
             bot.sendMessage(chat_id, "🎮 Iniciando partida en modo: *" + modoPartida + "*", "Markdown");
-            // El quiz se inicia cuando el usuario gira el encoder
+            
+            // Enviar comando por MQTT al ESP32
+            if (mqttClient.connected()) {
+              mqttClient.publish("wokwi/acciones", "iniciar_partida");
+              Serial.println("📤 Comando enviado por MQTT: iniciar_partida");
+            }
           } else {
             bot.sendMessage(chat_id, "⚠️ El juego ya está en curso", "Markdown");
           }
@@ -233,6 +375,8 @@ void procesarComandosTelegram() {
     numNewMessages = bot.getUpdates(bot.last_message_received + 1);
   }
 }
+*/
+
 
 // ==================== FUNCIONES EXISTENTES DEL QUIZ ====================
 
@@ -672,10 +816,16 @@ void setup() {
   inicializarUsuariosEjemplo();
   
   mostrarPantallaInicio();
-  Serial.println("Sistema listo. Usa Telegram para controlar.");
+  Serial.println("🚀 Sistema listo. Usa Telegram para controlar.");
 }
 
 void loop() {
+  // Mantener conexión MQTT
+  if (!mqttClient.connected()) {
+    reconnectMQTT();
+  }
+  mqttClient.loop();
+  
   // Procesar comandos de Telegram cada segundo
   if (millis() > lastTimeBotRan + 1000) {
     procesarComandosTelegram();
