@@ -297,7 +297,6 @@ else if (mensaje.startsWith("usuario_created:")) {
 }
 
 // Función mejorada de reconexión MQTT
-// REEMPLAZA la función checkMqttConnection con esta versión NO BLOQUEANTE:
 bool checkMqttConnection() {
   if (mqttClient.connected()) {
     return true;
@@ -310,7 +309,6 @@ bool checkMqttConnection() {
     Serial.print("Intentando conectar MQTT... ");
     String clientId = "ESP32Quiz-" + String(random(0xffff), HEX);
     
-    // ⚡ CONEXIÓN NO BLOQUEANTE con timeout corto
     if (mqttClient.connect(clientId.c_str())) {
       Serial.println("conectado!");
       
@@ -330,39 +328,6 @@ bool checkMqttConnection() {
     }
   }
   return false;
-}
-
-// MEJORA la función reconnectMQTT para que sea no bloqueante:
-void reconnectMQTT() {
-  // Esta función ahora es llamada de forma no bloqueante en el loop
-  if (!mqttClient.connected()) {
-    unsigned long now = millis();
-    
-    // ⚡ SOLO intentar reconexión cada 5 segundos
-    if (now - lastMqttReconnectAttempt > MQTT_RECONNECT_INTERVAL) {
-      lastMqttReconnectAttempt = now;
-      
-      Serial.print("🔌 Conectando MQTT...");
-      String clientId = "ESP32Client-" + String(random(0xffff), HEX);
-
-      // ⚡ INTENTO RÁPIDO de conexión (no bloqueante)
-      if (mqttClient.connect(clientId.c_str())) {
-        Serial.println("✅ Conectado MQTT!");
-        
-        bool subscripcionExitosa = mqttClient.subscribe("wokwi/acciones", 1);
-        Serial.print("📡 Suscrito a wokwi/acciones: ");
-        Serial.println(subscripcionExitosa ? "ÉXITO" : "FALLÓ");
-        
-        // Publicar mensaje de conexión
-        mqttClient.publish("wokwi/acciones", "ESP32 reconectado");
-      } else {
-        Serial.print("❌ Falló MQTT, rc=");
-        Serial.print(mqttClient.state());
-        Serial.println(" reintento en 5s");
-        // NO hacer delay aquí - eso bloquearía el loop
-      }
-    }
-  }
 }
 
 // ==================== FUNCIONES TELEGRAM ====================
@@ -1068,7 +1033,7 @@ bool buttonPressed() {
         encoderEnabled = false;
         encoderDisableUntil = now + 500; // ⚡ Aumentar a 500ms
         
-        //Serial.println("✅ Botón presionado");
+        Serial.println("✅ Botón presionado");
         return true;
     }
     
@@ -1148,30 +1113,29 @@ void setup()
 
 void loop()
 {
-  // ⚡ MANEJAR MQTT DE FORMA NO BLOQUEANTE
-  if (mqttClient.connected()) {
+  // Manejar conexión MQTT de forma no bloqueante
+  if (!mqttClient.connected()) {
+    checkMqttConnection();
+  } else {
     // Solo procesar MQTT si está conectado
     mqttClient.loop();
-  } else {
-    // ⚡ RECONEXIÓN NO BLOQUEANTE - solo intenta cada 5 segundos
-    reconnectMQTT();
   }
 
-  // ⚡ PROCESAR TELEGRAM (mantener frecuencia baja)
-  if (millis() - lastTimeBotRan > 2000) { // ⚡ Aumentar a 2 segundos
+  // Procesar Telegram menos frecuentemente
+  if (millis() - lastTimeBotRan > 1000) {
     procesarComandosTelegram();
     lastTimeBotRan = millis();
   }
 
-  // ⚡ ACTUALIZAR PANTALLA SI ES NECESARIO
+  // Actualizar pantalla si es necesario
   if (needsActualizarPantalla) {
     actualizarPantallaSegunEstado();
   }
 
-  // ⚡ LEER ENCODER - ESTO ES LO MÁS IMPORTANTE
+  // Leer encoder
   int step = readEncoderStep();
 
-  // ⚡ MÁQUINA DE ESTADOS PRINCIPAL - NUNCA BLOQUEANTE
+  // Máquina de estados principal
   switch (estadoActual)
   {
     case ESTADO_INICIO:
@@ -1296,7 +1260,4 @@ void loop()
       }
       break;
   }
-
-  // ⚡ PEQUEÑO DELAY PARA DAR RESPIRO AL SISTEMA (no bloqueante)
-  delay(10);
 }
