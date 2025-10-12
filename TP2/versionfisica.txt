@@ -1,5 +1,3 @@
-Versión SP32 físico main.cpp
-
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -52,6 +50,33 @@ int lastCLK = HIGH;
 unsigned long lastButtonPress = 0;
 
 // FUNCIONES SPIFFS - MANEJO DE ARCHIVOS REALES
+
+void exportarUsuariosJSONFormateado() {
+  Serial.println("\n💾 EXPORTANDO usuarios.json (FORMATEADO)...");
+  
+  File archivo = SPIFFS.open("/usuarios.json", "r");
+  if(!archivo){
+    Serial.println("ERROR: No se pudo abrir usuarios.json");
+    return;
+  }
+  
+  // Parsear y re-serializar para formato limpio
+  DynamicJsonDocument doc(8192);
+  DeserializationError error = deserializeJson(doc, archivo);
+  archivo.close();
+  
+  if(error) {
+    Serial.println("ERROR parsing JSON: " + String(error.c_str()));
+    return;
+  }
+  
+  Serial.println("=== COPIAR DESDE AQUÍ ===");
+  serializeJsonPretty(doc, Serial);
+  Serial.println("\n=== COPIAR HASTA AQUÍ ===");
+}
+
+
+
 bool inicializarSPIFFS() {
   if(!SPIFFS.begin(true)){
     Serial.println("Error al montar SPIFFS");
@@ -97,6 +122,38 @@ bool cargarPreguntas() {
   return true;
 }
 
+bool guardarUsuarios() {
+  File archivo = SPIFFS.open("/usuarios.json", "w");
+  Serial.println("HOLA");
+  if(!archivo){
+    Serial.println("Error al crear usuarios.json");
+    return false;
+  }
+  
+  DynamicJsonDocument doc(8192);
+  JsonArray usuariosArray = doc.to<JsonArray>();
+  
+  for(int i = 0; i < totalUsuarios; i++) {
+    JsonObject usuarioObj = usuariosArray.createNestedObject();
+    usuarioObj["nombre"] = usuarios[i].nombre;
+    usuarioObj["puntuacionMaxima"] = usuarios[i].puntuacionMaxima;
+    usuarioObj["partidasJugadas"] = usuarios[i].partidasJugadas;
+    usuarioObj["ultimaPartida"] = usuarios[i].ultimaPartida;
+  }
+  
+  if(serializeJsonPretty(doc, archivo) == 0){
+    Serial.println("Error al escribir en usuarios.json");
+    archivo.close();
+    return false;
+  }
+  
+  archivo.close();
+  Serial.println("Usuarios guardados correctamente");
+  exportarUsuariosJSONFormateado();
+  
+  return true;
+}
+
 bool cargarUsuarios() {
   if(!SPIFFS.exists("/usuarios.json")) {
     Serial.println("Archivo usuarios.json no existe, se creará uno nuevo");
@@ -136,34 +193,6 @@ bool cargarUsuarios() {
   return true;
 }
 
-bool guardarUsuarios() {
-  File archivo = SPIFFS.open("/usuarios.json", "w");
-  if(!archivo){
-    Serial.println("Error al crear usuarios.json");
-    return false;
-  }
-  
-  DynamicJsonDocument doc(8192);
-  JsonArray usuariosArray = doc.to<JsonArray>();
-  
-  for(int i = 0; i < totalUsuarios; i++) {
-    JsonObject usuarioObj = usuariosArray.createNestedObject();
-    usuarioObj["nombre"] = usuarios[i].nombre;
-    usuarioObj["puntuacionMaxima"] = usuarios[i].puntuacionMaxima;
-    usuarioObj["partidasJugadas"] = usuarios[i].partidasJugadas;
-    usuarioObj["ultimaPartida"] = usuarios[i].ultimaPartida;
-  }
-  
-  if(serializeJsonPretty(doc, archivo) == 0){
-    Serial.println("Error al escribir en usuarios.json");
-    archivo.close();
-    return false;
-  }
-  
-  archivo.close();
-  Serial.println("Usuarios guardados correctamente");
-  return true;
-}
 
 bool guardarPuntuacionFinal() {
   if(usuarioActual < 0) return false;
@@ -462,7 +491,8 @@ void procesarEntradaNombre() {
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
+  Serial.println("Terminal abierta");
   
   pinMode(LED_PIN, OUTPUT);
   pinMode(ENCODER_CLK, INPUT_PULLUP);

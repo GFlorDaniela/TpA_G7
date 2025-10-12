@@ -1,0 +1,59 @@
+INSTRUCTIVO COMPLETO: BOT + BRIDGE + ESP32 (WOKWI) + MQTT
+
+1️⃣ Crear el bot de Telegram
+1. Abrir Telegram y buscar @BotFather.
+2. Escribir /newbot y seguir las instrucciones.
+3. Guardar el TOKEN que devuelve.
+4. Ese token se usará en el script Python (bridge.py).
+
+2️⃣ Obtener tu chat_id de Telegram
+1. Hablar con tu bot y mandarle cualquier mensaje.
+2. En el navegador abrir: https://api.telegram.org/bot<TU_TOKEN>/getUpdates
+3. Anotar el número que aparece como chat_id.
+
+3️⃣ Crear el archivo requirements.txt --> ya esta creado
+1. Ejecutar el comando: pip install -r requirements.txt
+2. instala esta dependencia pip install flask flask-cors
+3. pip install python-telegram-bot==20.3 paho-mqtt requests
+4. pip install --upgrade python-telegram-bot
+5. pip install apscheduler==3.10.4 pytz
+6. no se el orden pero instalar
+
+4️⃣ Configurar y probar el bridge (Python)
+1. Definir el TOKEN del bot y el broker MQTT.
+2. Usar un mismo nombre de variable para el topic (por ejemplo TOPIC).
+3. Ejecutar bridge.py y verificar que se conecte correctamente al broker.
+4. Tambien prende la api.py
+
+5️⃣ Revisar los comandos disponibles en el bot
+Los comandos que puede manejar el bot son:
+- /start
+- /estado
+- /ranking
+- /ingresar_usuario <nombre>
+- /cargar_pregunta <texto;op1;op2;op3;correcta>
+- /seleccionar_partida <1vs1 | ranking | multijugador>
+- /iniciar_partida
+
+
+Compilar el firmware
+1. Compilar el proyecto con PlatformIO.
+2. Verificar que se generen los archivos firmware.bin y firmware.elf.
+
+8️⃣ Ejecutar en Wokwi
+1. Conectarse a Internet.
+2. Iniciar la simulación.
+3. Verificar en la consola de Wokwi que se conecte al broker y se suscriba al topic.
+
+Cosas que mejorar
+
+1. Las pantallas se ven medio mal mejorar visualizacion
+2. Lograr que el tpo entre que ingreso el comando en telegram y la respuesta en el oled sea mas instantaneo
+3. No me trae todos los usuarios para seleccionar con cual quiero jugar --> me canse no se como
+4. El encoder funciona MUY MAL no logro hacer que me tome bien 
+se me rompio y no lo puedo arreglar --> tengo q mantener precionado mucho tpo para que tome algo
+5. Verificar la logica o flujo de ejecucion
+es mejor primero seleccionas tu usuario, dps el tipo de juego y dps inicias la partida o como esta ahora
+6. Implementarlo en la version fisica y que funcione 
+7. Tmb estaria bueno agregar en el start la lista de todos los comandos q se pueden usar asi el usuario sabe 
+no probe el agregar pregunta todavia 

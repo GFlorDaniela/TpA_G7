@@ -1,0 +1,32 @@
+[
+  {
+    "texto": "¿Qué lenguaje usa Arduino?",
+    "opciones": ["C++", "Python", "Java"],
+    "correcta": 0,
+    "puntaje": 10
+  },
+  {
+    "texto": "Capital de Francia",
+    "opciones": ["Roma", "Madrid", "París"],
+    "correcta": 2,
+    "puntaje": 15
+  },
+  {
+    "texto": "Color bandera Argentina",
+    "opciones": ["Azul", "Blanco", "Celeste"],
+    "correcta": 2,
+    "puntaje": 10
+  },
+  {
+    "texto": "¿2+2?",
+    "opciones": ["3", "4", "5"],
+    "correcta": 1,
+    "puntaje": 5
+  },
+  {
+    "texto": "Animal Australia",
+    "opciones": ["Canguro", "Koala", "Emú"],
+    "correcta": 0,
+    "puntaje": 10
+  }
+]

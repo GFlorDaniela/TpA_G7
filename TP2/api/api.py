@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import json
 import os
+import threading
+import paho.mqtt.client as mqtt
 
 app = Flask(__name__)
 CORS(app)
@@ -9,6 +11,33 @@ CORS(app)
 # Archivos para persistencia
 USUARIOS_FILE = "usuarios.json"
 PREGUNTAS_FILE = "preguntas.json"
+
+# MQTT settings to notify ESP/bridge about user changes
+MQTT_SERVER = "test.mosquitto.org"
+MQTT_TOPIC = "wokwi/acciones"
+mqtt_client = None
+
+def setup_mqtt():
+    global mqtt_client
+    try:
+        mqtt_client = mqtt.Client()
+        mqtt_client.connect(MQTT_SERVER, 1883, 60)
+        mqtt_client.loop_start()
+        print(f"🔌 MQTT connected to {MQTT_SERVER}")
+    except Exception as e:
+        mqtt_client = None
+        print(f"⚠️ MQTT setup failed: {e}")
+
+def normalize_name(nombre: str) -> str:
+    if not nombre:
+        return ""
+    s = nombre.strip().upper()
+
+    if s.startswith("<") and s.endswith(">"):
+        s = s[1:-1].strip()
+
+    s = s.replace('<', '').replace('>', '')
+    return s
 
 def cargar_datos(archivo):
     """Carga datos desde archivo JSON"""
@@ -25,6 +54,34 @@ def guardar_datos(archivo, datos):
 # Cargar datos al iniciar
 usuarios = cargar_datos(USUARIOS_FILE)
 preguntas = cargar_datos(PREGUNTAS_FILE)
+
+# Normalizar y eliminar duplicados en usuarios
+def normalize_and_dedupe_users():
+    global usuarios
+    seen = {}
+    new_list = []
+    for u in usuarios:
+        nombre = normalize_name(u.get('nombre', ''))
+        if not nombre:
+            continue
+        # merge if exists: keep max puntos and sum partidas
+        if nombre in seen:
+            existing = seen[nombre]
+            existing['puntos'] = max(existing.get('puntos', 0), u.get('puntos', 0))
+            existing['partidas'] = existing.get('partidas', 0) + u.get('partidas', 0)
+        else:
+            new_u = {
+                'nombre': nombre,
+                'puntos': u.get('puntos', 0),
+                'partidas': u.get('partidas', 0)
+            }
+            seen[nombre] = new_u
+            new_list.append(new_u)
+    usuarios = new_list
+    guardar_datos(USUARIOS_FILE, usuarios)
+
+normalize_and_dedupe_users()
+setup_mqtt()
 
 # === RUTAS DE LA API ===
 
@@ -47,7 +104,7 @@ def crear_usuario():
     """Crea un nuevo usuario"""
     try:
         data = request.get_json()
-        nombre = data.get('nombre', '').upper().strip()
+        nombre = normalize_name(data.get('nombre', ''))
         
         if not nombre:
             return jsonify({"error": "Nombre requerido"}), 400
@@ -67,7 +124,16 @@ def crear_usuario():
         
         # Guardar en archivo
         guardar_datos(USUARIOS_FILE, usuarios)
-        
+
+        # Publish MQTT message to notify ESP/bridge (retain so late subscribers get it)
+        try:
+            if mqtt_client:
+                # Publish retained user message on the actions topic and a creation event
+                mqtt_client.publish(MQTT_TOPIC, f"usuario:{nombre}", qos=1, retain=True)
+                mqtt_client.publish(MQTT_TOPIC, f"usuario_created:{nombre}", qos=1, retain=False)
+        except Exception as e:
+            print(f"⚠️ Error publicando MQTT usuario: {e}")
+
         return jsonify({"mensaje": f"Usuario {nombre} creado"}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -150,7 +216,7 @@ def actualizar_puntaje():
     """Actualiza el puntaje de un usuario"""
     try:
         data = request.get_json()
-        nombre = data.get('nombre', '').upper()
+        nombre = normalize_name(data.get('nombre', ''))
         puntaje = data.get('puntaje', 0)
         
         # Buscar usuario
