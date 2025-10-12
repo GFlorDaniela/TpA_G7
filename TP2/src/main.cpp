@@ -25,13 +25,13 @@ const char *ssid = "Wokwi-GUEST";
 const char *password = "";
 const char *mqtt_server = "test.mosquitto.org";
 const int mqtt_port = 1883;
-const char *API_HOST = "10.0.2.2"; // Cambiar si tu API corre en otra IP (ej. 192.168.x.x)
+const char *API_HOST = "192.168.50.111";
 
 // Telegram
-const String BOT_TOKEN = "8238234652:AAEVwkqELgLiu8f_RpWsZlKfxq9azuSubUI";
-const String CHAT_ID = "2044158296";
+const String BOT_TOKEN = "8376405384:AAH_30BV0A7zlZotdfKpx3KucxvUtSanau8";
+const String CHAT_ID = "1078301149";
 
-// Separate clients: one plain client for MQTT, one secure client for Telegram (HTTPS)
+// Separate clients
 WiFiClient mqttWiFiClient;
 WiFiClientSecure secureClient;
 PubSubClient mqttClient(mqttWiFiClient);
@@ -53,7 +53,7 @@ struct Usuario
   int partidasJugadas;
 };
 
-// SIMULACIÓN DE ARCHIVOS - Contenido de preguntas.txt
+// SIMULACIÓN DE ARCHIVOS
 const char *ARCHIVO_PREGUNTAS[] = {
     "¿Qué lenguaje usa Arduino?;C++;Python;Java;0",
     "Capital de Francia;Roma;Madrid;París;2",
@@ -61,7 +61,6 @@ const char *ARCHIVO_PREGUNTAS[] = {
     "¿2+2?;3;4;5;1",
     "Animal Australia;Canguro;Koala;Emú;0"};
 
-// SIMULACIÓN DE ARCHIVOS - Contenido de puntajes.txt
 const int ARCHIVO_PUNTAJES[] = {10, 15, 10, 5, 10};
 
 // ==================== VARIABLES GLOBALES ====================
@@ -78,29 +77,29 @@ bool quizCompletado = false;
 bool quizIniciado = false;
 String modoPartida = "";
 
-// Variables encoder/button (polling)
+// Variables encoder/button
 unsigned long lastButtonPress = 0;
-// Ajuste de debounce más conservador para Wokwi
-const unsigned long BUTTON_DEBOUNCE_MS = 50; // ms
+const unsigned long BUTTON_DEBOUNCE_MS = 50;
 unsigned long lastEncoderStep = 0;
-const unsigned long ENCODER_STEP_MS = 50; // ms entre pasos para evitar rebotes rápidos
-int lastEncoderState = 0;
-int lastCLK = HIGH; // para encoder por flanco
+const unsigned long ENCODER_STEP_MS = 100;
+int lastCLK = HIGH;
 int lastDT = HIGH;
 int lastButtonState = HIGH;
 bool encoderEnabled = true;
 unsigned long encoderDisableUntil = 0;
 
-// Flag para forzar actualización de pantalla cuando un evento externo lo modifica
-volatile bool needsActualizarPantalla = false;
-
-// (Se eliminan ISRs; usar polling en loop para Wokwi)
+// Flag para actualización de pantalla
+volatile bool needsActualizarPantalla = true; // Iniciar como true para primera actualización
 
 // Variables Telegram
 unsigned long lastTimeBotRan = 0;
 bool telegramConnected = false;
 
-// ==================== NUEVOS ESTADOS ====================
+// Control de reconexión MQTT
+unsigned long lastMqttReconnectAttempt = 0;
+const unsigned long MQTT_RECONNECT_INTERVAL = 5000;
+
+// ==================== ESTADOS ====================
 enum EstadoSistema
 {
   ESTADO_INICIO,
@@ -113,7 +112,8 @@ enum EstadoSistema
 };
 
 EstadoSistema estadoActual = ESTADO_INICIO;
-bool modoSeleccionadoPorTelegram = false;
+EstadoSistema ultimoEstado = ESTADO_INICIO;
+int ultimaOpcion = -1;
 
 // ==================== PROTOTIPOS DE FUNCIONES ====================
 void mostrarPantallaConexiones();
@@ -127,7 +127,6 @@ void inicializarUsuariosEjemplo();
 int buscarUsuario(String nombre);
 void agregarUsuario(String nombre, bool setAsCurrent = true, bool notify = true);
 void actualizarPuntuacionUsuario();
-void mostrarRanking();
 void mostrarResultado();
 void verificarRespuesta();
 void reiniciarQuiz();
@@ -137,29 +136,26 @@ void iniciarJuego();
 void sincronizarUsuariosDesdeAPI();
 void postPuntajeToAPI(String nombre, int puntaje);
 int readEncoderStep();
-int readEncoderEdgeStep();
-void gatherRetainedUsuarios(unsigned long timeoutMs);
-bool cargarUsuariosDesdeSPIFFS();
-bool cargarPreguntasDesdeSPIFFS();
 bool buttonPressed();
 void actualizarPantallaSegunEstado();
+bool checkMqttConnection();
 
 void sincronizarUsuariosDesdeAPI() {
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
-  String url = String("http://") + String(API_HOST) + String(":8000/accion/ranking");
-  // Ajustá API_HOST si tu API corre en otra máquina/host
+  String url = "http://" + String(API_HOST) + ":8000/accion/ranking";
 
-  Serial.print("🔎 Sincronizando usuarios desde API: "); Serial.println(url);
+  Serial.print("Sincronizando usuarios desde API: ");
+  Serial.println(url);
+  
   http.begin(url);
+  http.setTimeout(5000);
+  
   int code = http.GET();
   if (code == 200) {
     String payload = http.getString();
-    Serial.println("📨 Respuesta API: ");
-    Serial.println(payload);
 
-    // parse simple: buscar nombres (JSON)
     DynamicJsonDocument doc(2048);
     auto err = deserializeJson(doc, payload);
     if (!err) {
@@ -169,155 +165,202 @@ void sincronizarUsuariosDesdeAPI() {
         nombre.trim();
         nombre.toUpperCase();
         if (buscarUsuario(nombre) == -1) {
-                // agregar sin auto-seleccionar ni notificar (proveniente de API)
-                agregarUsuario(nombre, false, false);
-              }
+          agregarUsuario(nombre, false, false);
+        }
       }
-      Serial.println("✅ Sincronizacion completa");
-      mostrarPantallaSeleccionUsuario();
-    } else {
-      Serial.print("❌ Error parseando JSON: "); Serial.println(err.c_str());
+      Serial.println("Sincronizacion completa");
+      needsActualizarPantalla = true;
     }
   } else {
-    Serial.print("❌ Error en GET usuarios, code="); Serial.println(code);
+    Serial.print("Error API: ");
+    Serial.println(code);
   }
   http.end();
 }
 
-// ==================== FUNCIONES MQTT ====================
+// ==================== FUNCIONES MQTT MEJORADAS ====================
 
 void callbackMQTT(char *topic, byte *payload, unsigned int length) {
-  Serial.println("=== 📨 MQTT CALLBACK ===");
-  String top = String(topic);
   String mensaje = "";
   for (int i = 0; i < length; i++) {
     mensaje += (char)payload[i];
   }
-  mensaje.trim();  // 🔹 ELIMINA ESPACIOS O SALTOS DE LÍNEA
-  Serial.print("Mensaje en topic '"); Serial.print(top); Serial.print("' -> '"); Serial.print(mensaje); Serial.println("'");
+  mensaje.trim();
 
-  // Procesamiento en el tópico de acciones (legacy): 'usuario:' y 'usuario_created:'
+  Serial.print("MQTT Recibido: ");
+  Serial.println(mensaje);
 
+  // Procesar mensaje de iniciar_partida
   if (mensaje == "iniciar_partida") {
     Serial.println("🎮 Comando: iniciar_partida - PROCESANDO");
-    // Si ya tenemos modo y usuario seleccionado -> iniciar el juego
-    if (modoPartida != "" && usuarioActual >= 0 && usuarioActual < totalUsuarios) {
+    
+    // Verificar si tenemos los requisitos para iniciar
+    if (modoPartida != "" && usuarioActual >= 0) {
       Serial.println("✅ Modo y usuario presentes - iniciando juego");
       iniciarJuego();
-    } else if (modoPartida == "") {
-      // Pedir selección de modo si no está definido
-      Serial.println("⚠️ No hay modo seleccionado - mostrando selección de modo");
-      estadoActual = ESTADO_SELECCION_MODO;
-      opcionSeleccionada = 0;
-      mostrarPantallaSeleccionModo();
     } else {
-      // Usuario no seleccionado: pedir selección/creación
-      Serial.println("⚠️ No hay usuario seleccionado - mostrando selección de usuario");
-      estadoActual = ESTADO_SELECCION_USUARIO;
+      Serial.println("⚠️ Faltan requisitos:");
+      Serial.print("  - Modo: ");
+      Serial.println(modoPartida);
+      Serial.print("  - Usuario: ");
+      Serial.println(usuarioActual);
+      
+      // Ir al estado apropiado según lo que falta
+      if (modoPartida == "") {
+        estadoActual = ESTADO_SELECCION_MODO;
+        Serial.println("➡️ Yendo a selección de modo");
+      } else {
+        estadoActual = ESTADO_SELECCION_USUARIO;
+        Serial.println("➡️ Yendo a selección de usuario");
+      }
       opcionSeleccionada = 0;
-      mostrarPantallaSeleccionUsuario();
+      needsActualizarPantalla = true;
     }
   } 
+  // Procesar mensaje de modo
   else if (mensaje.startsWith("modo:")) {
     String nuevoModo = mensaje.substring(5);
     nuevoModo.trim();
     nuevoModo.toLowerCase();
 
-    Serial.print("🎯 Modo recibido: '");
-    Serial.print(nuevoModo);
-    Serial.println("'");
+    Serial.print("🎯 Modo recibido: ");
+    Serial.println(nuevoModo);
 
     if (nuevoModo == "1vs1" || nuevoModo == "ranking" || nuevoModo == "multijugador") {
       modoPartida = nuevoModo;
       Serial.println("✅ Modo establecido: " + modoPartida);
-      // Si ya hay usuario seleccionado, ir a pantalla de espera para iniciar
+      
+      // Cambiar estado según situación actual
       if (usuarioActual >= 0) {
         estadoActual = ESTADO_ESPERA_INICIO;
         opcionSeleccionada = usuarioActual;
-        mostrarPantallaEsperaInicio();
-        Serial.println("✅ Modo establecido y usuario ya seleccionado -> pantalla de espera");
+        Serial.println("✅ Usuario ya seleccionado -> pantalla de espera");
       } else {
         estadoActual = ESTADO_SELECCION_USUARIO;
         opcionSeleccionada = 0;
-        mostrarPantallaSeleccionUsuario();
-        Serial.println("✅ Cambiado a pantalla de selección de usuario");
+        Serial.println("✅ Cambiado a selección de usuario");
       }
+      needsActualizarPantalla = true;
     } else {
-      Serial.println("⚠️ Modo no válido");
+      Serial.println("❌ Modo no válido");
     }
   }
-
+  // Procesar usuario existente (solo agregar)
   else if (mensaje.startsWith("usuario:")) {
-    // 'usuario:' retained message -> only add the user to the list, do NOT auto-select
     String nombre = mensaje.substring(8);
     nombre.trim();
     nombre.toUpperCase();
 
-    Serial.print("👤 Usuario MQTT (retained) recibido: "); Serial.println(nombre);
+    Serial.print("👤 Usuario recibido: ");
+    Serial.println(nombre);
 
     int existente = buscarUsuario(nombre);
     if (existente == -1) {
-      // Agregado por mensaje retained -> no auto-seleccionar, no notificar
       agregarUsuario(nombre, false, false);
-      Serial.println("✅ Usuario agregado vía MQTT (retained): " + nombre);
-    } else {
-      Serial.println("ℹ️ Usuario ya existía (retained): " + nombre);
+      Serial.println("✅ Usuario agregado a la lista");
     }
-    // Do not change selection on retained user messages to avoid unintended auto-selection.
   }
-
-  else if (mensaje.startsWith("usuario_created:")) {
-    // Event published only at creation time (non-retained). Auto-select and go to wait state.
+  // Procesar creación de usuario (agregar y seleccionar)
+  // En la función callbackMQTT, REEMPLAZA esta parte:
+else if (mensaje.startsWith("usuario_created:")) {
     String nombre = mensaje.substring(16);
     nombre.trim();
     nombre.toUpperCase();
 
-    Serial.print("👤 Usuario creado (evento) recibido: "); Serial.println(nombre);
+    Serial.print("👤 Usuario creado recibido: ");
+    Serial.println(nombre);
 
     int existente = buscarUsuario(nombre);
+    
+    // ⚡ SIEMPRE seleccionar el usuario, ya sea nuevo o existente
     if (existente == -1) {
-      // Evento de creación: agregar y sí notificar/seleccionar
-      agregarUsuario(nombre, true, true);
-      existente = buscarUsuario(nombre);
-      Serial.println("✅ Usuario agregado por evento: " + nombre);
+        // Si no existe, crearlo
+        agregarUsuario(nombre, true, true);
+        existente = buscarUsuario(nombre);
+        Serial.println("✅ Usuario NUEVO - creado y seleccionado");
+    } else {
+        // Si ya existe, seleccionarlo directamente
+        usuarioActual = existente;
+        Serial.println("✅ Usuario EXISTENTE - seleccionado");
     }
-    // Auto-select newly created user and go to wait-to-start
-    usuarioActual = existente;
+    
+    // Configurar estado
     estadoActual = ESTADO_ESPERA_INICIO;
-    opcionSeleccionada = usuarioActual >= 0 ? usuarioActual : 0;
-    mostrarPantallaEsperaInicio();
-    Serial.println("✅ Usuario auto-seleccionado por evento: " + nombre);
-  }
-
-  Serial.println("=== FIN CALLBACK ===");
+    opcionSeleccionada = usuarioActual;
+    needsActualizarPantalla = true;
+    
+    Serial.print("Usuario actual: ");
+    Serial.println(usuarioActual);
+    Serial.print("Nombre: ");
+    Serial.println(usuarios[usuarioActual].nombre);
+}
 }
 
-
-void reconnectMQTT()
-{
-  while (!mqttClient.connected())
-  {
-    Serial.print("🔌 Conectando a MQTT...");
-    String clientId = "ESP32Client-" + String(random(0xffff), HEX);
-
-    if (mqttClient.connect(clientId.c_str()))
-    {
-      Serial.println("✅ Conectado MQTT!");
-
-    bool subscripcionExitosa = mqttClient.subscribe("wokwi/acciones", 1);
-    Serial.print("📡 Suscrito a wokwi/acciones: ");
-    Serial.println(subscripcionExitosa ? "ÉXITO" : "FALLÓ");
-
-      mqttClient.publish("wokwi/acciones", "ESP32 conectado");
-      // Sincronizar usuarios desde la API una vez que estemos conectados a MQTT
-      sincronizarUsuariosDesdeAPI();
-    }
-    else
-    {
-      Serial.print("❌ Falló MQTT, rc=");
+// Función mejorada de reconexión MQTT
+// REEMPLAZA la función checkMqttConnection con esta versión NO BLOQUEANTE:
+bool checkMqttConnection() {
+  if (mqttClient.connected()) {
+    return true;
+  }
+  
+  unsigned long now = millis();
+  if (now - lastMqttReconnectAttempt > MQTT_RECONNECT_INTERVAL) {
+    lastMqttReconnectAttempt = now;
+    
+    Serial.print("Intentando conectar MQTT... ");
+    String clientId = "ESP32Quiz-" + String(random(0xffff), HEX);
+    
+    // ⚡ CONEXIÓN NO BLOQUEANTE con timeout corto
+    if (mqttClient.connect(clientId.c_str())) {
+      Serial.println("conectado!");
+      
+      // Suscribirse al tópico
+      if (mqttClient.subscribe("wokwi/acciones")) {
+        Serial.println("Suscripción a wokwi/acciones: OK");
+      } else {
+        Serial.println("Suscripción a wokwi/acciones: FALLÓ");
+      }
+      
+      return true;
+    } else {
+      Serial.print("falló, rc=");
       Serial.print(mqttClient.state());
-      Serial.println(" reintento en 5s");
-      delay(5000);
+      Serial.println(" intentar again en 5 segundos");
+      return false;
+    }
+  }
+  return false;
+}
+
+// MEJORA la función reconnectMQTT para que sea no bloqueante:
+void reconnectMQTT() {
+  // Esta función ahora es llamada de forma no bloqueante en el loop
+  if (!mqttClient.connected()) {
+    unsigned long now = millis();
+    
+    // ⚡ SOLO intentar reconexión cada 5 segundos
+    if (now - lastMqttReconnectAttempt > MQTT_RECONNECT_INTERVAL) {
+      lastMqttReconnectAttempt = now;
+      
+      Serial.print("🔌 Conectando MQTT...");
+      String clientId = "ESP32Client-" + String(random(0xffff), HEX);
+
+      // ⚡ INTENTO RÁPIDO de conexión (no bloqueante)
+      if (mqttClient.connect(clientId.c_str())) {
+        Serial.println("✅ Conectado MQTT!");
+        
+        bool subscripcionExitosa = mqttClient.subscribe("wokwi/acciones", 1);
+        Serial.print("📡 Suscrito a wokwi/acciones: ");
+        Serial.println(subscripcionExitosa ? "ÉXITO" : "FALLÓ");
+        
+        // Publicar mensaje de conexión
+        mqttClient.publish("wokwi/acciones", "ESP32 reconectado");
+      } else {
+        Serial.print("❌ Falló MQTT, rc=");
+        Serial.print(mqttClient.state());
+        Serial.println(" reintento en 5s");
+        // NO hacer delay aquí - eso bloquearía el loop
+      }
     }
   }
 }
@@ -326,7 +369,7 @@ void reconnectMQTT()
 
 void conectarTelegram()
 {
-  Serial.println("📶 Conectando a WiFi...");
+  Serial.println("Conectando a WiFi...");
   display.clearDisplay();
   display.setCursor(0, 0);
   display.println("Conectando WiFi...");
@@ -344,310 +387,113 @@ void conectarTelegram()
 
   if (WiFi.status() == WL_CONNECTED)
   {
-    Serial.println("\n✅ Conectado a WiFi!");
-    Serial.print("📡 IP: ");
+    Serial.println("Conectado a WiFi!");
+    Serial.print("IP: ");
     Serial.println(WiFi.localIP());
 
-  mqttClient.setServer(mqtt_server, mqtt_port);
-  mqttClient.setCallback(callbackMQTT);
+    // Configurar MQTT una sola vez
+    mqttClient.setServer(mqtt_server, mqtt_port);
+    mqttClient.setCallback(callbackMQTT);
+    mqttClient.setBufferSize(1024); // Aumentar buffer para mensajes largos
 
-  // Para Wokwi: permitir TLS sin CA durante pruebas
-  secureClient.setInsecure();
+    secureClient.setInsecure();
 
     display.clearDisplay();
     display.setCursor(0, 0);
-    display.println("Conectando Telegram...");
+    display.println("Conectando servicios...");
     display.display();
 
-  int botUsuarios = bot.getUpdates(0);
+    // Intentar conectar Telegram
+    int botUsuarios = bot.getUpdates(0);
     if (botUsuarios != -1)
     {
       telegramConnected = true;
-      Serial.println("✅ Conexión con Telegram exitosa!");
-
-      bot.sendMessage(CHAT_ID, "🤖 ¡Bot del Quiz ESP32 conectado! 🎮", "");
-      bot.sendMessage(CHAT_ID, "Usa /seleccionar_partida para elegir modo de juego", "");
-
-      // MOSTRAR PANTALLA DE INICIO INMEDIATAMENTE
-      estadoActual = ESTADO_INICIO;
-      mostrarPantallaConexiones();
+      Serial.println("Conexion con Telegram exitosa!");
+      bot.sendMessage(CHAT_ID, "Quiz ESP32 conectado y listo!", "");
+    } else {
+      Serial.println("Telegram no disponible, continuando...");
     }
-    else
-    {
-      Serial.println("❌ Error en conexión Telegram");
-      estadoActual = ESTADO_INICIO;
-      mostrarPantallaConexiones();
-    }
-  }
-  else
-  {
-    Serial.println("\n❌ Error conectando a WiFi");
+
+    // Sincronizar usuarios
+    sincronizarUsuariosDesdeAPI();
+    
     estadoActual = ESTADO_INICIO;
-    mostrarPantallaConexiones();
+    needsActualizarPantalla = true;
+    
+  } else {
+    Serial.println("Error conectando a WiFi");
+    estadoActual = ESTADO_INICIO;
+    needsActualizarPantalla = true;
   }
 }
 
 void procesarComandosTelegram()
 {
-  Serial.println("⏳ Revisando Telegram...");
   if (!telegramConnected) return;
 
-  int numNewMessages = bot.getUpdates(0);
-  Serial.print("📬 Mensajes nuevos: ");
-  Serial.println(numNewMessages);
+  int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
 
+  if (numNewMessages) {
+    Serial.print("Mensajes Telegram: ");
+    Serial.println(numNewMessages);
+  }
 
   while (numNewMessages)
   {
     for (int i = 0; i < numNewMessages; i++)
     {
-      // Raw values para debug (no los normalizamos todavía)
       String raw_chat_id = bot.messages[i].chat_id;
       String raw_text = bot.messages[i].text;
 
-      // Mostrar en Serial exactamente lo que llegó (útil para entender por qué no entra)
-      Serial.println("────────────────────────────────────");
-      Serial.print("📥 Mensaje index: "); Serial.println(i);
-      Serial.print("chat_id(raw): "); Serial.println(raw_chat_id);
-      Serial.print("texto(raw): '"); Serial.print(raw_text); Serial.println("'");
-
-      // Normalizamos el texto para comparar (minúscula + trim)
       String text = raw_text;
-      text.trim();            // quita espacios al inicio/final
-      // si el usuario escribió sin la barra inicial, la toleramos:
+      text.trim();
       if (!text.startsWith("/")) {
         text = "/" + text;
       }
       text.toLowerCase();
 
-      // Más debug
-      Serial.print("texto(normalizado): '"); Serial.print(text); Serial.println("'");
-      Serial.print("CHAT_ID esperado: "); Serial.println(CHAT_ID);
-
-  // Para debugging, podemos aceptar cualquier chat durante pruebas.
-  bool aceptarCualquierChat = true; // PRUEBAS EN WOKWI: aceptar mensajes desde cualquier chat
-
-  // Comparación numérica de chat_id para evitar diferencias de formato (strings, comillas, etc.)
-  long chat_id_rec = raw_chat_id.toInt();
-  long chat_id_conf = CHAT_ID.toInt();
-  bool mismo_chat = (chat_id_rec == chat_id_conf) || aceptarCualquierChat;
-
-      Serial.print("🧾 chat_id recibido: ");
-      Serial.println(raw_chat_id);
-      Serial.print("🔑 CHAT_ID configurado: ");
-      Serial.println(CHAT_ID);
-
-
-      // Si necesitás pruebas rápidas, comentá la siguiente línea y pon misma_chat = true;
-      // mismo_chat = true;
-
-      if (!mismo_chat) {
-        Serial.println("⚠️ Mensaje ignorado: chat distinto.");
-        continue;
-      }
-
-      // --- ACK automático para pruebas: confirmar recepción del mensaje ---
-      if (telegramConnected) {
-        String ack = "✅ Recibido: ";
-        ack += raw_text;
-        bot.sendMessage(raw_chat_id, ack, "");
-        Serial.print("✅ Ack enviado: "); Serial.println(raw_text);
-        Serial.print("last_message_received: "); Serial.println(bot.last_message_received);
-      }
-
-      // --- comandos ---
-      if (text == "/start" || text == "/help")
-      {
-        String welcome = "🎮 *Quiz ESP32 - Comandos disponibles:*\n";
-        welcome += "/seleccionar_partida 1vs1\n";
-        welcome += "/seleccionar_partida ranking\n";
-        welcome += "/seleccionar_partida multijugador\n";
-        welcome += "/iniciar_partida\n";
+      // Solo responder a comandos básicos para no bloquear
+      if (text == "/start" || text == "/help") {
+        String welcome = "Quiz ESP32 - Comandos:\n";
         welcome += "/ingresar_usuario NOMBRE\n";
-        welcome += "/ranking\n";
+        welcome += "/seleccionar_partida MODO\n"; 
+        welcome += "/iniciar_partida\n";
         welcome += "/estado\n";
-        bot.sendMessage(raw_chat_id, welcome, "Markdown");
-        Serial.println("✅ Respondí /help");
+        bot.sendMessage(raw_chat_id, welcome);
       }
-      else if (text == "/estado")
-      {
-        String estado = "📊 *Estado Actual:*\n";
-        estado += "Modo: " + (modoPartida == "" ? "No seleccionado" : modoPartida) + "\n";
-        estado += "Estado: ";
-        switch (estadoActual)
-        {
-          case ESTADO_INICIO: estado += "Inicio"; break;
-          case ESTADO_SELECCION_MODO: estado += "Seleccionando modo"; break;
-          case ESTADO_SELECCION_USUARIO: estado += "Seleccionando usuario"; break;
-          case ESTADO_JUGANDO: estado += "Jugando"; break;
-          case ESTADO_FINAL: estado += "Finalizado"; break;
-        }
-        estado += "\nPregunta: " + String(preguntaActual + 1) + "/" + String(totalPreguntas);
-        estado += "\nPuntuación: " + String(puntuacionTotal);
-        estado += "\nUsuario: " + (usuarioActual >= 0 ? usuarios[usuarioActual].nombre : "No seleccionado");
-        bot.sendMessage(raw_chat_id, estado, "Markdown");
-        Serial.println("✅ Respondí /estado");
+      else if (text == "/estado") {
+        String estado_msg = "Estado:\nModo: ";
+        estado_msg += modoPartida;
+        estado_msg += "\nUsuario: ";
+        estado_msg += (usuarioActual >= 0 ? usuarios[usuarioActual].nombre : "Ninguno");
+        bot.sendMessage(raw_chat_id, estado_msg);
       }
-      else if (text == "/ranking")
-      {
-        String rankingMsg = "🏆 *Ranking Actual:*\n";
-        if (totalUsuarios == 0) {
-          rankingMsg += "No hay usuarios registrados";
-        } else {
-          for (int k = 0; k < (totalUsuarios < 5 ? totalUsuarios : 5); k++) {
-            rankingMsg += String(k + 1) + ". " + usuarios[k].nombre + " - " + String(usuarios[k].puntuacionMaxima) + " pts\n";
-          }
-        }
-        bot.sendMessage(raw_chat_id, rankingMsg, "Markdown");
-        Serial.println("✅ Respondí /ranking");
-      }
-      else if (text.startsWith("/seleccionar_partida"))
-      {
-        // extraer modo dinámicamente
-        String modo = text.substring(String("/seleccionar_partida").length());
-        modo.trim();
-        // por si el usuario escribió con o sin slash, o con mayúsculas
-        modo.toLowerCase();
-
-        Serial.print("🎯 Modo pedido: '"); Serial.print(modo); Serial.println("'");
-
-        if (modo.length() == 0)
-        {
-          String ayuda = "🎮 *Selecciona modo de partida:*\n";
-          ayuda += "/seleccionar_partida 1vs1\n";
-          ayuda += "/seleccionar_partida ranking\n";
-          ayuda += "/seleccionar_partida multijugador";
-          bot.sendMessage(raw_chat_id, ayuda, "Markdown");
-        }
-        else if (modo == "1vs1" || modo == "ranking" || modo == "multijugador")
-        {
-          modoPartida = modo;
-          bot.sendMessage(raw_chat_id, "✅ Modo seleccionado: *" + modo + "*", "Markdown");
-          Serial.println("📤 Modo guardado localmente: " + modo);
-
-          if (mqttClient.connected()) {
-            mqttClient.publish("wokwi/acciones", ("modo:" + modo).c_str());
-            Serial.println("📤 Modo enviado por MQTT: " + modo);
-          }
-
-          // cuando se selecciona modo por Telegram, pasar a selección usuario
-          estadoActual = ESTADO_SELECCION_USUARIO;
-          opcionSeleccionada = 0;
-          mostrarPantallaSeleccionUsuario();
-          Serial.println("➡️ Estado -> ESTADO_SELECCION_USUARIO (por Telegram)");
-        }
-        else
-        {
-          bot.sendMessage(raw_chat_id, "❌ Modos válidos: 1vs1, ranking, multijugador", "Markdown");
-        }
-      }
-      else if (text == "/iniciar_partida")
-      {
-        if (modoPartida == "")
-        {
-          bot.sendMessage(raw_chat_id, "❌ Primero selecciona un modo con /seleccionar_partida", "Markdown");
-        }
-        else if (estadoActual != ESTADO_JUGANDO && estadoActual != ESTADO_FINAL)
-        {
-          bot.sendMessage(raw_chat_id, "🎮 Iniciando partida en modo: *" + modoPartida + "*", "Markdown");
-          if (mqttClient.connected())
-          {
-            mqttClient.publish("wokwi/acciones", "iniciar_partida");
-            Serial.println("📤 Comando enviado por MQTT: iniciar_partida");
-          }
-          // iniciarJuego() se disparará desde el callbackMQTT que ya maneja "iniciar_partida"
-        }
-        else
-        {
-          bot.sendMessage(raw_chat_id, "⚠️ El juego ya está en curso", "Markdown");
-        }
-      }
-      else if (text.startsWith("/ingresar_usuario"))
-      {
-        String nombre = text.substring(String("/ingresar_usuario").length());
-        nombre.trim();
-        if (nombre.length() == 0) {
-          bot.sendMessage(raw_chat_id, "❌ Ingresa un nombre: /ingresar_usuario Sofi", "Markdown");
-          Serial.println("❌ Nombre vacío en /ingresar_usuario");
-        } else {
-          // normalizamos a mayúsculas para almacenamiento y búsqueda consistente
-          nombre.toUpperCase();
-          Serial.println("📝 Intentando crear/seleccionar usuario: " + nombre);
-          int usuarioExistente = buscarUsuario(nombre);
-
-          if (usuarioExistente == -1)
-          {
-            // creación vía Telegram: agregar, seleccionar y notificar
-            agregarUsuario(nombre, true, true);
-            bot.sendMessage(raw_chat_id, "✅ Usuario registrado: *" + nombre + "*", "Markdown");
-            Serial.println("✅ Usuario creado: " + nombre);
-            // seleccionar automáticamente al nuevo usuario
-            usuarioActual = buscarUsuario(nombre); // índice recién agregado
-            opcionSeleccionada = usuarioActual >= 0 ? usuarioActual : 0;
-            // Si el modo es 1vs1, ir directamente a selección de oponente
-            if (modoPartida == "1vs1") {
-              estadoActual = ESTADO_SELECCION_OPONENTE;
-              // empezar la selección de oponente desde el primer distinto
-              opcionSeleccionada = (usuarioActual == 0 && totalUsuarios>1) ? 1 : 0;
-              mostrarPantallaSeleccionOponente();
-            } else {
-              estadoActual = ESTADO_ESPERA_INICIO;
-              mostrarPantallaEsperaInicio();
-            }
-
-            bot.sendMessage(raw_chat_id, "✅ Usuario creado: *" + nombre + "*. Gira el encoder o usa /iniciar_partida para comenzar.", "Markdown");
-          }
-          else
-          {
-            usuarioActual = usuarioExistente;
-            bot.sendMessage(raw_chat_id, "✅ Usuario seleccionado: *" + nombre + "*", "Markdown");
-            Serial.println("🔁 Usuario seleccionado índice: " + String(usuarioActual));
-            // En lugar de forzar selección en pantalla, vamos a pantalla de espera
-            estadoActual = ESTADO_ESPERA_INICIO;
-            opcionSeleccionada = usuarioActual;
-            mostrarPantallaEsperaInicio();
-
-            if (modoPartida != "") {
-              // Si el modo ya fue seleccionado, iniciamos la partida automáticamente
-              bot.sendMessage(raw_chat_id, "🎮 Iniciando partida automáticamente...", "Markdown");
-              iniciarJuego();
-            } else {
-              bot.sendMessage(raw_chat_id, "💡 Usuario listo. Selecciona modo con /seleccionar_partida o gira el encoder para comenzar cuando el modo esté listo.", "Markdown");
-            }
-          }
-        }
-      }
-      else
-      {
-        // Comando no reconocido -> mostrar debug al usuario y al serial
-        Serial.println("❓ Comando no reconocido: " + text);
-        bot.sendMessage(raw_chat_id, "❓ Comando no reconocido. Usa /help para ver comandos.", "Markdown");
-      }
-
-    } // for i
-
-  // pedir siguientes mensajes (si hay)
-  numNewMessages = bot.getUpdates(0);
-  } // while
+    }
+    numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  }
 }
 
-// ==================== NUEVAS FUNCIONES DE PANTALLA ====================
+// ==================== FUNCIONES DE PANTALLA ====================
 
 void mostrarPantallaConexiones()
 {
   display.clearDisplay();
   display.setCursor(0, 0);
-  display.println("✅ SISTEMA LISTO");
+  display.println("--SISTEMA LISTO--");
   display.setCursor(0, 12);
   display.println("WiFi: CONECTADO");
   display.setCursor(0, 24);
-  display.println("Telegram: OK");
+  if (telegramConnected) {
+    display.println("Telegram: OK");
+  } else {
+    display.println("Telegram: --");
+  }
   display.setCursor(0, 36);
-  display.println("MQTT: CONECTADO");
+  display.println("Usa Telegram:");
   display.setCursor(0, 48);
-  display.println("/iniciar_partida");
+  display.println("/ingresar_usuario");
   display.setCursor(0, 56);
-  display.println("o Gira encoder->");
+  display.println("/seleccionar_partida");
   display.display();
 }
 
@@ -683,15 +529,6 @@ void mostrarPantallaSeleccionUsuario()
   display.setCursor(0, 0);
   display.println("SELECCIONA USUARIO:");
 
-  Serial.print("🔎 Mostrar pantalla selección usuario - totalUsuarios="); Serial.println(totalUsuarios);
-  Serial.print("⏱ UI populated at millis: "); Serial.println(millis());
-  if (totalUsuarios>0) {
-    Serial.println("Lista completa de usuarios:");
-    for (int i=0;i<totalUsuarios;i++) {
-      Serial.print("  "); Serial.print(i); Serial.print(": "); Serial.println(usuarios[i].nombre);
-    }
-  }
-
   if (totalUsuarios == 0)
   {
     display.setCursor(5, 20);
@@ -705,11 +542,9 @@ void mostrarPantallaSeleccionUsuario()
   }
   else
   {
-    // MOSTRAR TODOS LOS USUARIOS CON SCROLL
     int inicio = 0;
     int usuariosPorPantalla = 4;
 
-    // Si hay más de 4 usuarios, permitir scroll
     if (totalUsuarios > usuariosPorPantalla)
     {
       inicio = (opcionSeleccionada / usuariosPorPantalla) * usuariosPorPantalla;
@@ -730,7 +565,6 @@ void mostrarPantallaSeleccionUsuario()
       display.println(usuarios[indiceUsuario].nombre);
     }
 
-    // Indicador de scroll si hay más usuarios
     if (totalUsuarios > usuariosPorPantalla)
     {
       display.setCursor(110, 55);
@@ -753,20 +587,18 @@ void mostrarPantallaEsperaInicio()
   display.setCursor(0, 12);
   if (usuarioActual >= 0)
   {
-    Serial.print("➡️ Entrando a ESPERA_INICIO - usuarioActual="); Serial.println(usuarioActual);
     display.print("Jugador: ");
     display.println(usuarios[usuarioActual].nombre);
   }
-  display.setCursor(0, 28);
-  display.println("Gira el encoder ->");
-  display.setCursor(0, 40);
+  display.setCursor(0, 24);
+  display.print("Modo: ");
+  display.println(modoPartida);
+  display.setCursor(0, 36);
+  display.println("Gira encoder ->");
+  display.setCursor(0, 48);
   display.println("o /iniciar_partida");
   display.setCursor(0, 56);
-  if (modoPartida == "1vs1") {
-    display.println("Click: Seleccionar oponente");
-  } else {
-    display.println("Click: Iniciar");
-  }
+  display.println("Click: Iniciar");
   display.display();
 }
 
@@ -775,9 +607,6 @@ void mostrarPantallaSeleccionOponente()
   display.clearDisplay();
   display.setCursor(0, 0);
   display.println("SELECC. OPONENTE:");
-
-  Serial.print("🔎 Entrando a SELECCION_OPONENTE - totalUsuarios="); Serial.println(totalUsuarios);
-  Serial.print("    usuarioActual="); Serial.println(usuarioActual);
 
   if (totalUsuarios <= 1)
   {
@@ -802,7 +631,7 @@ void mostrarPantallaSeleccionOponente()
   for (int i = 0; mostrarIdx < usuariosPorPantalla && (inicio + i) < totalUsuarios; i++)
   {
     int idx = inicio + i;
-    if (idx == usuarioActual) continue; // no mostrar al propio jugador
+    if (idx == usuarioActual) continue;
 
     display.setCursor(5, 15 + mostrarIdx * 12);
     if (idx == opcionSeleccionada)
@@ -822,12 +651,125 @@ void mostrarPantallaSeleccionOponente()
   display.display();
 }
 
-// ==================== FUNCIONES EXISTENTES DEL QUIZ ====================
+// REEMPLAZA la función mostrarPregunta con esta versión mejorada:
+void mostrarPregunta() {
+    display.clearDisplay();
+
+    // Header con información (tamaño normal)
+    display.setCursor(0, 0);
+    if (usuarioActual >= 0) {
+        // Limitar longitud del nombre si es muy largo
+        String nombreDisplay = usuarios[usuarioActual].nombre;
+        if (nombreDisplay.length() > 8) {
+            nombreDisplay = nombreDisplay.substring(0, 8) + ".";
+        }
+        display.print(nombreDisplay);
+    }
+    
+    if (modoPartida == "1vs1" && oponenteActual >= 0) {
+        display.setCursor(65, 0);
+        display.print("VS:");
+        String oponenteDisplay = usuarios[oponenteActual].nombre;
+        if (oponenteDisplay.length() > 6) {
+            oponenteDisplay = oponenteDisplay.substring(0, 6) + ".";
+        }
+        display.setCursor(85, 0);
+        display.print(oponenteDisplay);
+    }
+    
+    display.setCursor(105, 0);
+    display.print(preguntaActual + 1);
+    display.print("/");
+    display.print(totalPreguntas);
+    
+    // ⚡ MEJOR FORMATO PARA PREGUNTAS Y OPCIONES
+    String preguntaTexto = preguntas[preguntaActual].texto;
+    
+    // Corregir caracteres especiales
+    preguntaTexto.replace("¿", "?");  // Corregir signo de pregunta invertido
+    preguntaTexto.replace("¡", "!");  // Corregir signo de exclamación invertido
+    
+    // Mostrar pregunta con mejor formato
+    int yPos = 12;
+    int maxWidth = 120;
+    int charWidth = 6; // Ancho aproximado de cada carácter
+    
+    // Dividir pregunta en líneas si es muy larga
+    String lineaActual = "";
+    for (int i = 0; i < preguntaTexto.length(); i++) {
+        char c = preguntaTexto[i];
+        lineaActual += c;
+        
+        // Si la línea actual excede el ancho o encontramos un espacio después de cierto punto
+        if (lineaActual.length() * charWidth >= maxWidth || (c == ' ' && lineaActual.length() * charWidth >= maxWidth - 20)) {
+            display.setCursor(0, yPos);
+            display.println(lineaActual);
+            yPos += 10;
+            lineaActual = "";
+        }
+    }
+    
+    // Mostrar última línea si queda texto
+    if (lineaActual.length() > 0) {
+        display.setCursor(0, yPos);
+        display.println(lineaActual);
+        yPos += 12;
+    }
+    
+    // ⚡ MOSTRAR OPCIONES CON MEJOR ESPACIADO
+    for (int i = 0; i < 3; i++) {
+        display.setCursor(5, yPos + (i * 10));
+        if (i == opcionSeleccionada) {
+            display.print(">");
+        } else {
+            display.print(" ");
+        }
+        display.print(" ");
+        
+        // Limitar longitud de opciones si son muy largas
+        String opcion = preguntas[preguntaActual].opciones[i];
+        if (opcion.length() > 18) {
+            opcion = opcion.substring(0, 18) + ".";
+        }
+        display.println(opcion);
+    }
+
+    display.display();
+}
+
+void mostrarResultado()
+{
+  display.clearDisplay();
+  display.setCursor(20, 10);
+  display.println("QUIZ COMPLETADO!");
+  display.setCursor(10, 25);
+  if (usuarioActual >= 0)
+  {
+    display.print("Jugador: ");
+    display.println(usuarios[usuarioActual].nombre);
+  }
+  display.setCursor(30, 40);
+  display.print("Puntos: ");
+  display.println(puntuacionTotal);
+
+  if (modoPartida == "1vs1" && oponenteActual >= 0)
+  {
+    display.setCursor(0, 50);
+    String s = "VS "; s += usuarios[oponenteActual].nombre;
+    display.println(s);
+    display.setCursor(80, 50);
+    display.print("O: "); display.print(usuarios[oponenteActual].puntuacionMaxima);
+  }
+  display.setCursor(5, 55);
+  display.println("Click para reiniciar");
+  display.display();
+}
+
+// ==================== FUNCIONES DEL QUIZ ====================
 
 void simularCargaArchivos()
 {
-  Serial.println("=== SIMULANDO SISTEMA DE ARCHIVOS ===");
-  Serial.println("Cargando preguntas desde 'preguntas.txt'...");
+  Serial.println("=== CARGANDO PREGUNTAS ===");
 
   for (int i = 0; i < totalPreguntas; i++)
   {
@@ -852,80 +794,53 @@ void simularCargaArchivos()
       preguntas[i].opciones[2] = linea.substring(separadores[2] + 1, separadores[3]);
       preguntas[i].respuestaCorrecta = linea.substring(separadores[3] + 1).toInt();
       preguntas[i].puntaje = ARCHIVO_PUNTAJES[i];
-
-      Serial.println("Cargada: " + preguntas[i].texto);
     }
   }
-  Serial.println("Total: " + String(totalPreguntas) + " preguntas cargadas\n");
+  Serial.println("Preguntas cargadas");
 }
 
 void inicializarUsuariosEjemplo()
 {
-  // ELIMINAR USUARIOS DE PRUEBA - empezar con array vacío
   totalUsuarios = 0;
-
-  Serial.println("Sistema de usuarios inicializado - vacío");
+  Serial.println("Sistema de usuarios inicializado");
 }
 
 int buscarUsuario(String nombre) {
-  Serial.print("🔍 Buscando usuario: ");
-  Serial.println(nombre);
-  
   for(int i = 0; i < totalUsuarios; i++) {
-    Serial.print("Comparando con: ");
-    Serial.println(usuarios[i].nombre);
-    
     if(usuarios[i].nombre == nombre) {
-      Serial.print("✅ Usuario encontrado en índice: ");
-      Serial.println(i);
       return i;
     }
   }
-  Serial.println("❌ Usuario no encontrado");
   return -1;
 }
 
 void agregarUsuario(String nombre, bool setAsCurrent, bool notify) {
   if (totalUsuarios < 20) {
-    Serial.print("🔧 Agregando usuario: ");
-    Serial.println(nombre);
+    usuarios[totalUsuarios].nombre = nombre;
+    usuarios[totalUsuarios].puntuacionMaxima = 0;
+    usuarios[totalUsuarios].partidasJugadas = 0;
 
-    int nuevoIndice = totalUsuarios;
-    usuarios[nuevoIndice].nombre = nombre;
-    usuarios[nuevoIndice].puntuacionMaxima = 0;
-    usuarios[nuevoIndice].partidasJugadas = 0;
-
-    // Solo establecer usuarioActual si se solicita (ej. creación por UI/Telegram)
     if (setAsCurrent) {
-      usuarioActual = nuevoIndice;
+      usuarioActual = totalUsuarios;
     }
 
     totalUsuarios++;
 
-    Serial.print("✅ Usuario agregado. Total: ");
+    Serial.print("Usuario agregado: ");
+    Serial.println(nombre);
+    Serial.print("Total usuarios: ");
     Serial.println(totalUsuarios);
-    Serial.print("Usuario actual (si aplicado): ");
+    Serial.print("Usuario actual: ");
     Serial.println(usuarioActual);
-  Serial.print("⏱ Usuario agregado at millis: "); Serial.println(millis());
-  Serial.print("📥 Último usuario: "); Serial.println(usuarios[totalUsuarios-1].nombre);
 
-    // DEBUG simplificado
-    Serial.println("=== USUARIOS ACTUALES ===");
-    for(int i = 0; i < totalUsuarios; i++) {
-      Serial.print(i);
-      Serial.print(": ");
-      Serial.println(usuarios[i].nombre);
-    }
-    Serial.println("========================");
-
-    // Notificar por Telegram solo si estamos conectados y notify==true
     if (notify && telegramConnected) {
-      bot.sendMessage(CHAT_ID, "👤 Nuevo usuario registrado: *" + nombre + "*", "Markdown");
+      bot.sendMessage(CHAT_ID, "Nuevo usuario: " + nombre);
     }
-  } else {
-    Serial.println("❌ No se puede agregar usuario - array lleno");
+    
+    needsActualizarPantalla = true;
   }
 }
+
 void actualizarPuntuacionUsuario()
 {
   if (usuarioActual >= 0)
@@ -935,76 +850,7 @@ void actualizarPuntuacionUsuario()
     {
       usuarios[usuarioActual].puntuacionMaxima = puntuacionTotal;
     }
-    Serial.println("Usuario " + usuarios[usuarioActual].nombre +
-                   " actualizado. Max: " + usuarios[usuarioActual].puntuacionMaxima +
-                   " Partidas: " + usuarios[usuarioActual].partidasJugadas);
-
-    if (telegramConnected)
-    {
-      String msg = "🏆 *Actualización de Usuario:*\n";
-      msg += "Jugador: " + usuarios[usuarioActual].nombre + "\n";
-      msg += "Puntuación máxima: " + String(usuarios[usuarioActual].puntuacionMaxima) + "\n";
-      msg += "Partidas jugadas: " + String(usuarios[usuarioActual].partidasJugadas);
-      bot.sendMessage(CHAT_ID, msg, "Markdown");
-    }
   }
-}
-
-void mostrarRanking()
-{
-  Serial.println("=== RANKING ACTUAL ===");
-
-  Usuario rankingTemp[totalUsuarios];
-  for (int i = 0; i < totalUsuarios; i++)
-  {
-    rankingTemp[i] = usuarios[i];
-  }
-
-  for (int i = 0; i < totalUsuarios - 1; i++)
-  {
-    for (int j = i + 1; j < totalUsuarios; j++)
-    {
-      bool debeIntercambiar = false;
-
-      if (rankingTemp[j].puntuacionMaxima > rankingTemp[i].puntuacionMaxima)
-      {
-        debeIntercambiar = true;
-      }
-      else if (rankingTemp[j].puntuacionMaxima == rankingTemp[i].puntuacionMaxima)
-      {
-        if (rankingTemp[j].partidasJugadas > rankingTemp[i].partidasJugadas)
-        {
-          debeIntercambiar = true;
-        }
-        else if (rankingTemp[j].partidasJugadas == rankingTemp[i].partidasJugadas)
-        {
-          if (rankingTemp[j].nombre < rankingTemp[i].nombre)
-          {
-            debeIntercambiar = true;
-          }
-        }
-      }
-
-      if (debeIntercambiar)
-      {
-        Usuario temp = rankingTemp[i];
-        rankingTemp[i] = rankingTemp[j];
-        rankingTemp[j] = temp;
-      }
-    }
-  }
-
-  for (int i = 0; i < totalUsuarios; i++)
-  {
-    String posicion = String(i + 1) + ".";
-    if (i < 9)
-      posicion = " " + posicion;
-
-    Serial.println(posicion + " " + rankingTemp[i].nombre +
-                   " - Puntos: " + rankingTemp[i].puntuacionMaxima +
-                   " - Partidas: " + rankingTemp[i].partidasJugadas);
-  }
-  Serial.println("=====================");
 }
 
 void mostrarTextoEnLineas(String texto, int x, int y, int anchoMax)
@@ -1030,93 +876,26 @@ void mostrarTextoEnLineas(String texto, int x, int y, int anchoMax)
   }
 }
 
-String limpiarTexto(String texto)
-{
-  texto.replace("á", "a");
-  texto.replace("é", "e");
-  texto.replace("í", "i");
-  texto.replace("ó", "o");
-  texto.replace("ú", "u");
-  texto.replace("ñ", "n");
-  texto.replace("¿", "?");
-  texto.replace("¡", "!");
-  return texto;
-}
-
-void mostrarPregunta()
-{
-  display.clearDisplay();
-
-  display.setCursor(0, 0);
-  if (usuarioActual >= 0)
-  {
-    display.print(usuarios[usuarioActual].nombre);
-  }
-  // Mostrar oponente si es 1vs1
-  if (modoPartida == "1vs1" && oponenteActual >= 0)
-  {
-    display.setCursor(70, 0);
-    display.print("VS:");
-    display.setCursor(88, 0);
-    display.print(usuarios[oponenteActual].nombre);
-  }
-  else
-  {
-    display.print("JUGADOR");
-  }
-  display.setCursor(70, 0);
-  display.print(preguntaActual + 1);
-  display.print("/");
-  display.print(totalPreguntas);
-  display.setCursor(100, 0);
-  display.print(puntuacionTotal);
-
-  mostrarTextoEnLineas(limpiarTexto(preguntas[preguntaActual].texto), 0, 12, 128);
-
-  for (int i = 0; i < 3; i++)
-  {
-    display.setCursor(5, 25 + i * 12);
-    if (i == opcionSeleccionada)
-    {
-      display.print("> ");
-    }
-    else
-    {
-      display.print("  ");
-    }
-    display.println(preguntas[preguntaActual].opciones[i]);
-  }
-
-  display.display();
-}
-
-void mostrarResultado()
-{
-  display.clearDisplay();
-  display.setCursor(20, 10);
-  display.println("QUIZ COMPLETADO!");
-  display.setCursor(10, 25);
-  if (usuarioActual >= 0)
-  {
-    display.print("Jugador: ");
-    display.println(usuarios[usuarioActual].nombre);
-  }
-  display.setCursor(30, 40);
-  display.print("Puntos: ");
-  display.println(puntuacionTotal);
-
-  // Si es 1vs1 mostrar resumen contra oponente
-  if (modoPartida == "1vs1" && oponenteActual >= 0)
-  {
-    display.setCursor(0, 50);
-    String s = "VS "; s += usuarios[oponenteActual].nombre;
-    display.println(s);
-    display.setCursor(80, 50);
-    display.print("O: "); display.print(usuarios[oponenteActual].puntuacionMaxima);
-  }
-  display.setCursor(5, 55);
-  display.println("Click para reiniciar");
-  display.display();
+// MEJORA la función limpiarTexto:
+String limpiarTexto(String texto) {
+    // Caracteres españoles
+    texto.replace("á", "a");
+    texto.replace("é", "e");
+    texto.replace("í", "i");
+    texto.replace("ó", "o");
+    texto.replace("ú", "u");
+    texto.replace("ñ", "n");
+    
+    // ⚡ CORREGIR SIGNOS ESPAÑOLES (problema del "¿" al revés)
+    texto.replace("¿", "?");  // Cambiar ¿ por ?
+    texto.replace("¡", "!");  // Cambiar ¡ por !
+    
+    // Eliminar caracteres problemáticos
+    texto.replace("`", "");
+    texto.replace("´", "");
+    texto.replace("¨", "");
+    
+    return texto;
 }
 
 void verificarRespuesta()
@@ -1137,11 +916,6 @@ void verificarRespuesta()
     display.print("CORRECTO! +");
     display.print(preguntas[preguntaActual].puntaje);
     digitalWrite(LED_PIN, HIGH);
-
-    if (telegramConnected)
-    {
-      bot.sendMessage(CHAT_ID, "✅ ¡Respuesta correcta! +" + String(preguntas[preguntaActual].puntaje) + " puntos", "");
-    }
   }
   else
   {
@@ -1150,15 +924,10 @@ void verificarRespuesta()
     display.setCursor(0, 45);
     display.print("Correcta: ");
     display.println(preguntas[preguntaActual].opciones[preguntas[preguntaActual].respuestaCorrecta]);
-
-    if (telegramConnected)
-    {
-      bot.sendMessage(CHAT_ID, "❌ Respuesta incorrecta. La correcta era: " + preguntas[preguntaActual].opciones[preguntas[preguntaActual].respuestaCorrecta], "");
-    }
   }
 
   display.display();
-  delay(1500); // REDUCIDO DE 3000ms A 1500ms
+  delay(1500);
   digitalWrite(LED_PIN, LOW);
 
   preguntaActual++;
@@ -1166,63 +935,34 @@ void verificarRespuesta()
   {
     quizCompletado = true;
     actualizarPuntuacionUsuario();
-    mostrarRanking();
     estadoActual = ESTADO_FINAL;
     mostrarResultado();
 
-    if (telegramConnected)
-    {
-      String resultado = "🏁 *QUIZ COMPLETADO!*\n";
-      resultado += "Jugador: " + (usuarioActual >= 0 ? usuarios[usuarioActual].nombre : "Anónimo") + "\n";
-      resultado += "Puntuación final: *" + String(puntuacionTotal) + "* puntos\n";
-      resultado += "Modo de juego: " + modoPartida;
-      bot.sendMessage(CHAT_ID, resultado, "Markdown");
-    }
-    // En modo 1vs1, comparar con el oponente y notificar
-    if (modoPartida == "1vs1" && oponenteActual >= 0 && oponenteActual < totalUsuarios) {
-      String msg;
-      int puntOponente = usuarios[oponenteActual].puntuacionMaxima;
-      if (puntuacionTotal > puntOponente) {
-        msg = "🏆 Resultado 1vs1: GANASTE!\n";
-        msg += "Tu puntaje: " + String(puntuacionTotal) + " vs " + usuarios[oponenteActual].nombre + ": " + String(puntOponente);
-      } else if (puntuacionTotal == puntOponente) {
-        msg = "⚖️ Resultado 1vs1: EMPATE\n";
-        msg += "Tu puntaje: " + String(puntuacionTotal) + " vs " + usuarios[oponenteActual].nombre + ": " + String(puntOponente);
-      } else {
-        msg = "❌ Resultado 1vs1: PERDISTE\n";
-        msg += "Tu puntaje: " + String(puntuacionTotal) + " vs " + usuarios[oponenteActual].nombre + ": " + String(puntOponente);
-      }
-      if (telegramConnected) bot.sendMessage(CHAT_ID, msg, "Markdown");
-      // Enviar puntaje del jugador a la API para actualizar ranking
+    if (usuarioActual >= 0) {
       postPuntajeToAPI(usuarios[usuarioActual].nombre, puntuacionTotal);
-    } else {
-      // Para otros modos, enviar puntaje del jugador
-      if (usuarioActual >= 0) postPuntajeToAPI(usuarios[usuarioActual].nombre, puntuacionTotal);
     }
   }
   else
   {
     opcionSeleccionada = 0;
-    mostrarPregunta(); // MOSTRAR SIGUIENTE PREGUNTA INMEDIATAMENTE
+    mostrarPregunta();
   }
 }
 
 void iniciarJuego() {
-  Serial.println("=== 🎮 INICIAR JUEGO ===");
+  Serial.println("=== INICIAR JUEGO ===");
   
-  // VALIDACIONES MÁS ESTRICTAS
   if (usuarioActual < 0) {
-    Serial.println("❌ ERROR: No hay usuario seleccionado (usuarioActual < 0)");
-    return;
-  }
-  
-  if (usuarioActual >= totalUsuarios) {
-    Serial.println("❌ ERROR: usuarioActual fuera de rango");
+    Serial.println("ERROR: No hay usuario seleccionado");
+    estadoActual = ESTADO_SELECCION_USUARIO;
+    needsActualizarPantalla = true;
     return;
   }
   
   if (modoPartida == "") {
-    Serial.println("❌ ERROR: No hay modo seleccionado");
+    Serial.println("ERROR: No hay modo seleccionado");
+    estadoActual = ESTADO_SELECCION_MODO;
+    needsActualizarPantalla = true;
     return;
   }
   
@@ -1231,7 +971,7 @@ void iniciarJuego() {
   Serial.print("Modo: ");
   Serial.println(modoPartida);
   
-  // REINICIAR VARIABLES DEL JUEGO
+  // Reiniciar variables del juego
   quizIniciado = true;
   quizCompletado = false;
   preguntaActual = 0;
@@ -1240,17 +980,15 @@ void iniciarJuego() {
   estadoActual = ESTADO_JUGANDO;
   
   if (telegramConnected) {
-    String mensaje = "🎮 Partida iniciada!\n";
-    mensaje += "Jugador: *" + usuarios[usuarioActual].nombre + "*\n";
-    mensaje += "Modo: *" + modoPartida + "*";
-    if (modoPartida == "1vs1" && oponenteActual >= 0) {
-      mensaje += "\nOponente: *" + usuarios[oponenteActual].nombre + "*";
-    }
-    bot.sendMessage(CHAT_ID, mensaje, "Markdown");
+    String mensaje = "Partida iniciada! Jugador: ";
+    mensaje += usuarios[usuarioActual].nombre;
+    mensaje += " Modo: ";
+    mensaje += modoPartida;
+    bot.sendMessage(CHAT_ID, mensaje);
   }
   
   mostrarPregunta();
-  Serial.println("✅ Juego iniciado correctamente");
+  Serial.println("Juego iniciado correctamente");
 }
 
 void reiniciarQuiz()
@@ -1261,356 +999,304 @@ void reiniciarQuiz()
   quizCompletado = false;
   quizIniciado = false;
   estadoActual = ESTADO_INICIO;
+  needsActualizarPantalla = true;
+}
 
-  mostrarPantallaConexiones();
+void postPuntajeToAPI(String nombre, int puntaje) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  HTTPClient http;
+  String url = "http://" + String(API_HOST) + ":8000/accion/actualizar_puntaje";
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  String body = "{\"nombre\": \"" + nombre + "\", \"puntaje\": " + String(puntaje) + "}";
+  http.POST(body);
+  http.end();
+}
 
-  if (telegramConnected)
-  {
-    bot.sendMessage(CHAT_ID, "🔄 Quiz reiniciado. Listo para nueva partida", "");
+// Función optimizada de actualización de pantalla
+void actualizarPantallaSegunEstado() {
+  // Solo actualizar si cambió el estado o la opción seleccionada
+  if (estadoActual != ultimoEstado || opcionSeleccionada != ultimaOpcion || needsActualizarPantalla) {
+    Serial.print("Actualizando pantalla - Estado: ");
+    Serial.println(estadoActual);
+    
+    switch (estadoActual) {
+      case ESTADO_INICIO: 
+        mostrarPantallaConexiones(); 
+        break;
+      case ESTADO_SELECCION_MODO: 
+        mostrarPantallaSeleccionModo(); 
+        break;
+      case ESTADO_SELECCION_USUARIO: 
+        mostrarPantallaSeleccionUsuario(); 
+        break;
+      case ESTADO_ESPERA_INICIO: 
+        mostrarPantallaEsperaInicio(); 
+        break;
+      case ESTADO_SELECCION_OPONENTE: 
+        mostrarPantallaSeleccionOponente(); 
+        break;
+      case ESTADO_JUGANDO: 
+        mostrarPregunta(); 
+        break;
+      case ESTADO_FINAL: 
+        mostrarResultado(); 
+        break;
+      default: 
+        mostrarPantallaConexiones(); 
+        break;
+    }
+    
+    ultimoEstado = estadoActual;
+    ultimaOpcion = opcionSeleccionada;
   }
+  needsActualizarPantalla = false;
+}
+
+// Polling-only button detection
+// MEJORA la función buttonPressed:
+bool buttonPressed() {
+    int current = digitalRead(ENCODER_SW);
+    unsigned long now = millis();
+    
+    // ⚡ AUMENTAR DEBOUNCE PARA WOKWI (más estable)
+    if (current == LOW && lastButtonState == HIGH && (now - lastButtonPress) > 300) {
+        lastButtonPress = now;
+        lastButtonState = current;
+        
+        // Bloquear encoder temporalmente para evitar activaciones accidentales
+        encoderEnabled = false;
+        encoderDisableUntil = now + 500; // ⚡ Aumentar a 500ms
+        
+        //Serial.println("✅ Botón presionado");
+        return true;
+    }
+    
+    lastButtonState = current;
+    
+    // Reactivar encoder después del tiempo de bloqueo
+    if (!encoderEnabled && millis() > encoderDisableUntil) {
+        encoderEnabled = true;
+    }
+    
+    return false;
+}
+
+// Detección por flanco simple para el encoder
+// REEMPLAZA la función readEncoderStep con esta versión mejorada:
+int readEncoderStep() {
+    if (!encoderEnabled) return 0;
+    
+    static unsigned long lastEncoderTime = 0;
+    unsigned long now = millis();
+    
+    // ⚡ Aumentar delay para Wokwi (más estable)
+    if (now - lastEncoderTime < 200) return 0;
+    
+    int clkState = digitalRead(ENCODER_CLK);
+    int dtState = digitalRead(ENCODER_DT);
+    int step = 0;
+    
+    if (clkState != lastCLK) {
+        lastEncoderTime = now;
+        if (clkState == LOW) {
+            // Determinar dirección basada en el estado de DT
+            if (dtState != clkState) {
+                step = 1;  // Sentido horario
+            } else {
+                step = -1; // Sentido antihorario
+            }
+        }
+        lastCLK = clkState;
+    }
+    return step;
 }
 
 void setup()
 {
-  Serial.begin(9600);
+  Serial.begin(115200); // Aumentar velocidad para mejor debug
+  Serial.println("Iniciando sistema...");
 
   pinMode(LED_PIN, OUTPUT);
   pinMode(ENCODER_CLK, INPUT_PULLUP);
   pinMode(ENCODER_DT, INPUT_PULLUP);
   pinMode(ENCODER_SW, INPUT_PULLUP);
 
-  // Inicializar estado del encoder (usaremos polling por flancos)
-  lastEncoderState = (digitalRead(ENCODER_CLK) << 1) | digitalRead(ENCODER_DT);
   lastCLK = digitalRead(ENCODER_CLK);
   lastDT = digitalRead(ENCODER_DT);
   lastButtonState = digitalRead(ENCODER_SW);
 
-  display.begin(0x3c, true);
+  // Inicializar display
+  if(!display.begin(0x3c, true)) {
+    Serial.println("Error inicializando OLED");
+    while(1);
+  }
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
   display.clearDisplay();
-
-    // mqttClient callback is set when MQTT server is configured (in conectarTelegram)
-
-  // Mostrar pantalla de conexión inmediatamente
-  display.clearDisplay();
+  
   display.setCursor(0, 0);
   display.println("Iniciando sistema...");
   display.display();
 
   simularCargaArchivos();
-  inicializarUsuariosEjemplo(); // Ahora inicia vacío
+  inicializarUsuariosEjemplo();
+  conectarTelegram();
 
-  conectarTelegram(); // Esta función ahora muestra la pantalla de inicio automáticamente
-
-  // Intentar sincronizar usuarios existentes desde la API (si está corriendo en el host)
-  sincronizarUsuariosDesdeAPI();
-
-  Serial.println("🚀 Sistema listo. Flujo mejorado activado.");
+  Serial.println("Sistema listo - ESPERANDO COMANDOS");
 }
 
 void loop()
 {
-  if (!mqttClient.connected())
-  {
+  // ⚡ MANEJAR MQTT DE FORMA NO BLOQUEANTE
+  if (mqttClient.connected()) {
+    // Solo procesar MQTT si está conectado
+    mqttClient.loop();
+  } else {
+    // ⚡ RECONEXIÓN NO BLOQUEANTE - solo intenta cada 5 segundos
     reconnectMQTT();
   }
-  mqttClient.loop();
 
-  if (millis() > lastTimeBotRan + 100)
-  {
+  // ⚡ PROCESAR TELEGRAM (mantener frecuencia baja)
+  if (millis() - lastTimeBotRan > 2000) { // ⚡ Aumentar a 2 segundos
     procesarComandosTelegram();
     lastTimeBotRan = millis();
   }
 
-  // Revisión periódica rápida para forzar actualización de pantalla si algo externo cambió
-  static unsigned long lastDisplayCheck = 0;
-  if (millis() > lastDisplayCheck + 100) {
-    lastDisplayCheck = millis();
-    if (needsActualizarPantalla) {
-      actualizarPantallaSegunEstado();
-    }
+  // ⚡ ACTUALIZAR PANTALLA SI ES NECESARIO
+  if (needsActualizarPantalla) {
+    actualizarPantallaSegunEstado();
   }
 
+  // ⚡ LEER ENCODER - ESTO ES LO MÁS IMPORTANTE
+  int step = readEncoderStep();
 
-  int currentCLK = digitalRead(ENCODER_CLK);
-
+  // ⚡ MÁQUINA DE ESTADOS PRINCIPAL - NUNCA BLOQUEANTE
   switch (estadoActual)
   {
-  case ESTADO_INICIO:
-  {
-  int step = readEncoderStep();
-    if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS)
-    {
-      lastEncoderStep = millis();
-      estadoActual = ESTADO_SELECCION_MODO;
-      opcionSeleccionada = 0;
-      mostrarPantallaSeleccionModo();
-    }
-  }
-    break;
-
-  case ESTADO_SELECCION_MODO:
-    {
-  int step = readEncoderStep();
-      if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS)
-      {
+    case ESTADO_INICIO:
+      if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS) {
         lastEncoderStep = millis();
-        if (step > 0) {
-          opcionSeleccionada++;
-        } else {
-          opcionSeleccionada--;
-        }
-        if (opcionSeleccionada < 0)
-          opcionSeleccionada = 2;
-        mostrarPantallaSeleccionModo();
-      }
-    }
-
-  if (buttonPressed())
-    {
-      String modos[] = {"1vs1", "ranking", "multijugador"};
-      modoPartida = modos[opcionSeleccionada];
-      modoSeleccionadoPorTelegram = false;
-
-      estadoActual = ESTADO_SELECCION_USUARIO;
-      opcionSeleccionada = 0;
-      mostrarPantallaSeleccionUsuario();
-    }
-    break;
-
-  case ESTADO_SELECCION_USUARIO:
-    if (totalUsuarios > 0)
-    {
-      {
-  int step = readEncoderStep();
-        if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS)
-        {
-          lastEncoderStep = millis();
-          if (step > 0)
-          {
-            opcionSeleccionada++;
-          }
-          else
-          {
-            opcionSeleccionada--;
-          }
-          if (opcionSeleccionada < 0)
-            opcionSeleccionada = totalUsuarios - 1;
-          if (opcionSeleccionada >= totalUsuarios)
-            opcionSeleccionada = 0;
-          mostrarPantallaSeleccionUsuario();
-        }
-      }
-
-      if (buttonPressed())
-      {
-        usuarioActual = opcionSeleccionada;
-        // ir a pantalla de espera en vez de comenzar inmediatamente
-        estadoActual = ESTADO_ESPERA_INICIO;
+        estadoActual = ESTADO_SELECCION_MODO;
+        opcionSeleccionada = 0;
         needsActualizarPantalla = true;
-        mostrarPantallaEsperaInicio();
       }
-    }
-    else {
-      // Si no hay usuarios, intentar sincronizar desde API/MQTT para poblar la lista
-      Serial.println("🔄 No hay usuarios locales - solicitando sincronizacion API/MQTT");
-      sincronizarUsuariosDesdeAPI();
-      if (mqttClient.connected()) {
-        mqttClient.publish("wokwi/acciones", "pedir_usuarios");
-        Serial.println("📤 Peticion MQTT: pedir_usuarios");
-      }
-      mostrarPantallaSeleccionUsuario();
-    }
-    break;
+      break;
 
-  case ESTADO_ESPERA_INICIO:
-    // En la pantalla de espera, el encoder permite cambiar el usuario visualmente
-    if (totalUsuarios > 0)
-    {
-    {
-  int step = readEncoderStep();
-        if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS)
-        {
+    case ESTADO_SELECCION_MODO:
+      if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS) {
+        lastEncoderStep = millis();
+        if (step > 0) opcionSeleccionada++;
+        else opcionSeleccionada--;
+        
+        if (opcionSeleccionada < 0) opcionSeleccionada = 2;
+        if (opcionSeleccionada > 2) opcionSeleccionada = 0;
+        needsActualizarPantalla = true;
+      }
+
+      if (buttonPressed()) {
+        String modos[] = {"1vs1", "ranking", "multijugador"};
+        modoPartida = modos[opcionSeleccionada];
+        estadoActual = ESTADO_SELECCION_USUARIO;
+        opcionSeleccionada = 0;
+        needsActualizarPantalla = true;
+        Serial.println("Modo seleccionado: " + modoPartida);
+      }
+      break;
+
+    case ESTADO_SELECCION_USUARIO:
+      if (totalUsuarios > 0) {
+        if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS) {
           lastEncoderStep = millis();
-          if (step > 0)
-          {
-            opcionSeleccionada++;
-          }
-          else
-          {
-            opcionSeleccionada--;
-          }
-          if (opcionSeleccionada < 0)
-            opcionSeleccionada = totalUsuarios - 1;
-          if (opcionSeleccionada >= totalUsuarios)
-            opcionSeleccionada = 0;
+          if (step > 0) opcionSeleccionada++;
+          else opcionSeleccionada--;
+          
+          if (opcionSeleccionada < 0) opcionSeleccionada = totalUsuarios - 1;
+          if (opcionSeleccionada >= totalUsuarios) opcionSeleccionada = 0;
+          needsActualizarPantalla = true;
+        }
+
+        if (buttonPressed()) {
           usuarioActual = opcionSeleccionada;
-          mostrarPantallaEsperaInicio();
+          estadoActual = ESTADO_ESPERA_INICIO;
+          needsActualizarPantalla = true;
+          Serial.print("Usuario seleccionado: ");
+          Serial.println(usuarios[usuarioActual].nombre);
         }
       }
+      break;
 
-      if (buttonPressed())
-      {
-        // si el modo es 1vs1, pasar a seleccionar oponente
-        if (modoPartida == "1vs1") {
-          estadoActual = ESTADO_SELECCION_OPONENTE;
-          // iniciar la opcion de selección desde el primer usuario visible
-          opcionSeleccionada = (usuarioActual == 0 && totalUsuarios>1) ? 1 : 0;
-          mostrarPantallaSeleccionOponente();
-        } else {
-          // iniciar partida con el usuario actualmente seleccionado
-          iniciarJuego();
-        }
-      }
-    }
-    break;
-
-  case ESTADO_SELECCION_OPONENTE:
-    if (totalUsuarios > 1)
-    {
-    {
-  int step = readEncoderStep();
-        if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS)
-        {
+    case ESTADO_ESPERA_INICIO:
+      if (totalUsuarios > 0) {
+        if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS) {
           lastEncoderStep = millis();
-          if (step > 0)
-          {
-            opcionSeleccionada++;
+          if (step > 0) opcionSeleccionada++;
+          else opcionSeleccionada--;
+          
+          if (opcionSeleccionada < 0) opcionSeleccionada = totalUsuarios - 1;
+          if (opcionSeleccionada >= totalUsuarios) opcionSeleccionada = 0;
+          usuarioActual = opcionSeleccionada;
+          needsActualizarPantalla = true;
+        }
+
+        if (buttonPressed()) {
+          if (modoPartida == "1vs1") {
+            estadoActual = ESTADO_SELECCION_OPONENTE;
+            opcionSeleccionada = (usuarioActual == 0 && totalUsuarios>1) ? 1 : 0;
+            needsActualizarPantalla = true;
+          } else {
+            iniciarJuego();
           }
-          else
-          {
-            opcionSeleccionada--;
-          }
-          if (opcionSeleccionada < 0)
-            opcionSeleccionada = totalUsuarios - 1;
-          if (opcionSeleccionada >= totalUsuarios)
-            opcionSeleccionada = 0;
-          // saltar propio usuario
+        }
+      }
+      break;
+
+    case ESTADO_SELECCION_OPONENTE:
+      if (totalUsuarios > 1) {
+        if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS) {
+          lastEncoderStep = millis();
+          if (step > 0) opcionSeleccionada++;
+          else opcionSeleccionada--;
+          
+          if (opcionSeleccionada < 0) opcionSeleccionada = totalUsuarios - 1;
+          if (opcionSeleccionada >= totalUsuarios) opcionSeleccionada = 0;
+          
           if (opcionSeleccionada == usuarioActual) {
             opcionSeleccionada = (opcionSeleccionada + 1) % totalUsuarios;
           }
-          mostrarPantallaSeleccionOponente();
+          needsActualizarPantalla = true;
+        }
+
+        if (buttonPressed()) {
+          oponenteActual = opcionSeleccionada;
+          iniciarJuego();
         }
       }
+      break;
 
-      if (buttonPressed())
-      {
-        oponenteActual = opcionSeleccionada;
-        // una vez seleccionado el oponente iniciamos la partida
-        iniciarJuego();
-      }
-    }
-    break;
-
-  case ESTADO_JUGANDO:
-    {
-    int step = readEncoderStep();
-      if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS)
-      {
+    case ESTADO_JUGANDO:
+      if (step != 0 && millis() - lastEncoderStep > ENCODER_STEP_MS) {
         lastEncoderStep = millis();
-        if (step > 0)
-        {
-          opcionSeleccionada++;
-        }
-        else
-        {
-          opcionSeleccionada--;
-        }
-        if (opcionSeleccionada < 0)
-          opcionSeleccionada = 2;
-        if (opcionSeleccionada > 2)
-          opcionSeleccionada = 0;
-        mostrarPregunta();
+        if (step > 0) opcionSeleccionada++;
+        else opcionSeleccionada--;
+        
+        if (opcionSeleccionada < 0) opcionSeleccionada = 2;
+        if (opcionSeleccionada > 2) opcionSeleccionada = 0;
+        needsActualizarPantalla = true;
       }
-    }
 
-    if (buttonPressed())
-    {
-      verificarRespuesta();
-    }
-    break;
+      if (buttonPressed()) {
+        verificarRespuesta();
+      }
+      break;
 
-  case ESTADO_FINAL:
-    if (buttonPressed() && millis() - lastButtonPress > 500)
-    {
-      reiniciarQuiz();
-    }
-    break;
+    case ESTADO_FINAL:
+      if (buttonPressed() && millis() - lastButtonPress > 500) {
+        reiniciarQuiz();
+      }
+      break;
   }
 
-  // previous lastCLK logic removed; encoder handled by readEncoderStep()
-}
-
-void postPuntajeToAPI(String nombre, int puntaje) {
-  if (WiFi.status() != WL_CONNECTED) return;
-  HTTPClient http;
-  String url = String("http://") + String(API_HOST) + String(":8000/accion/actualizar_puntaje");
-  http.begin(url);
-  http.addHeader("Content-Type", "application/json");
-  String body = "{\"nombre\": \"" + nombre + "\", \"puntaje\": " + String(puntaje) + "}";
-  int code = http.POST(body);
-  Serial.print("🔁 POST puntaje "); Serial.print(nombre); Serial.print(" -> code="); Serial.println(code);
-  http.end();
-}
-
-// (Transition-table encoder implementation removed — using polling/flank detection below)
-
-// Intentar recolectar mensajes retained de usuarios durante timeoutMs
-void gatherRetainedUsuarios(unsigned long timeoutMs) {
-  unsigned long start = millis();
-  Serial.println("🔎 Recolectando retained usuarios por MQTT...");
-  while (millis() - start < timeoutMs) {
-    mqttClient.loop();
-    delay(5);
-  }
-  Serial.println("🔎 Recolección finalizada");
-}
-
-// Polling-only button detection con debounce (Wokwi-friendly)
-bool buttonPressed() {
-  int current = digitalRead(ENCODER_SW);
-  unsigned long now = millis();
-  if (current == LOW && lastButtonState == HIGH && (now - lastButtonPress) > BUTTON_DEBOUNCE_MS) {
-    lastButtonPress = now;
-    lastButtonState = current;
-    // bloquear encoder temporalmente para evitar rotaciones accidentales
-    encoderEnabled = false;
-    encoderDisableUntil = now + 150;
-    return true;
-  }
-  lastButtonState = current;
-  if (!encoderEnabled && millis() > encoderDisableUntil) encoderEnabled = true;
-  return false;
-}
-
-// Detección por flanco simple para el encoder (polling)
-int readEncoderStep() {
-  if (!encoderEnabled) return 0;
-  int a = digitalRead(ENCODER_CLK);
-  int b = digitalRead(ENCODER_DT);
-  int step = 0;
-  if (a != lastCLK) {
-    if (a == LOW) {
-      // dirección basada en DT
-      if (b != a) step = 1; else step = -1;
-    }
-    lastCLK = a;
-  }
-  return step;
-}
-
-// Forzar la actualización de pantalla según el estado actual
-void actualizarPantallaSegunEstado() {
-  needsActualizarPantalla = false;
-  switch (estadoActual) {
-    case ESTADO_INICIO: mostrarPantallaConexiones(); break;
-    case ESTADO_SELECCION_MODO: mostrarPantallaSeleccionModo(); break;
-    case ESTADO_SELECCION_USUARIO: mostrarPantallaSeleccionUsuario(); break;
-    case ESTADO_ESPERA_INICIO: mostrarPantallaEsperaInicio(); break;
-    case ESTADO_SELECCION_OPONENTE: mostrarPantallaSeleccionOponente(); break;
-    case ESTADO_JUGANDO: mostrarPregunta(); break;
-    case ESTADO_FINAL: mostrarResultado(); break;
-    default: mostrarPantallaConexiones(); break;
-  }
+  // ⚡ PEQUEÑO DELAY PARA DAR RESPIRO AL SISTEMA (no bloqueante)
+  delay(10);
 }

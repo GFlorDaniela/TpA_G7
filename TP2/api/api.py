@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import paho.mqtt.client as mqtt
+import time
 
 app = Flask(__name__)
 CORS(app)
@@ -24,9 +25,11 @@ def setup_mqtt():
         mqtt_client.connect(MQTT_SERVER, 1883, 60)
         mqtt_client.loop_start()
         print(f"🔌 MQTT connected to {MQTT_SERVER}")
+        return True
     except Exception as e:
         mqtt_client = None
         print(f"⚠️ MQTT setup failed: {e}")
+        return False
 
 def normalize_name(nombre: str) -> str:
     if not nombre:
@@ -48,8 +51,11 @@ def cargar_datos(archivo):
 
 def guardar_datos(archivo, datos):
     """Guarda datos en archivo JSON"""
-    with open(archivo, 'w', encoding='utf-8') as f:
-        json.dump(datos, f, ensure_ascii=False, indent=2)
+    try:
+        with open(archivo, 'w', encoding='utf-8') as f:
+            json.dump(datos, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Error guardando {archivo}: {e}")
 
 # Cargar datos al iniciar
 usuarios = cargar_datos(USUARIOS_FILE)
@@ -101,7 +107,7 @@ def obtener_ranking():
 
 @app.route('/accion/usuario', methods=['POST'])
 def crear_usuario():
-    """Crea un nuevo usuario"""
+    """Crea un nuevo usuario - OPTIMIZADO"""
     try:
         data = request.get_json()
         nombre = normalize_name(data.get('nombre', ''))
@@ -109,7 +115,7 @@ def crear_usuario():
         if not nombre:
             return jsonify({"error": "Nombre requerido"}), 400
         
-        # Verificar si ya existe
+        # ⚡ BÚSQUEDA RÁPIDA
         for usuario in usuarios:
             if usuario['nombre'] == nombre:
                 return jsonify({"mensaje": "Usuario ya existe"}), 200
@@ -122,17 +128,19 @@ def crear_usuario():
         }
         usuarios.append(nuevo_usuario)
         
-        # Guardar en archivo
-        guardar_datos(USUARIOS_FILE, usuarios)
+        # ⚡ GUARDADO EN SEGUNDO PLANO
+        threading.Thread(target=guardar_datos, args=(USUARIOS_FILE, usuarios)).start()
 
-        # Publish MQTT message to notify ESP/bridge (retain so late subscribers get it)
-        try:
-            if mqtt_client:
-                # Publish retained user message on the actions topic and a creation event
-                mqtt_client.publish(MQTT_TOPIC, f"usuario:{nombre}", qos=1, retain=True)
-                mqtt_client.publish(MQTT_TOPIC, f"usuario_created:{nombre}", qos=1, retain=False)
-        except Exception as e:
-            print(f"⚠️ Error publicando MQTT usuario: {e}")
+        # ⚡ MQTT SIN BLOQUEAR
+        if mqtt_client:
+            def publicar_mqtt():
+                try:
+                    mqtt_client.publish(MQTT_TOPIC, f"usuario:{nombre}", qos=1, retain=True)
+                    mqtt_client.publish(MQTT_TOPIC, f"usuario_created:{nombre}", qos=0, retain=False)
+                except Exception as e:
+                    print(f"⚠️ Error MQTT async: {e}")
+            
+            threading.Thread(target=publicar_mqtt).start()
 
         return jsonify({"mensaje": f"Usuario {nombre} creado"}), 201
     except Exception as e:
@@ -173,7 +181,8 @@ def crear_pregunta():
         }
         
         preguntas.append(nueva_pregunta)
-        guardar_datos(PREGUNTAS_FILE, preguntas)
+        # ⚡ GUARDADO EN SEGUNDO PLANO
+        threading.Thread(target=guardar_datos, args=(PREGUNTAS_FILE, preguntas)).start()
         
         return jsonify({"mensaje": "Pregunta creada", "id": nueva_pregunta["id"]}), 201
     except Exception as e:
@@ -192,28 +201,29 @@ def obtener_preguntas():
 
 @app.route('/accion/iniciar_partida', methods=['POST'])
 def iniciar_partida():
-    """Marca el inicio de una partida"""
+    """Marca el inicio de una partida - OPTIMIZADO"""
     try:
-        # Por ahora solo registramos el evento
         print("🎮 Partida iniciada")
+        # ⚡ RESPUESTA INMEDIATA
         return jsonify({"mensaje": "Partida iniciada"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/accion/modo_partida', methods=['POST'])
 def establecer_modo_partida():
-    """Establece el modo de partida"""
+    """Establece el modo de partida - OPTIMIZADO"""
     try:
         data = request.get_json()
         modo = data.get('tipo', '')
         print(f"🎮 Modo de partida establecido: {modo}")
+        # ⚡ RESPUESTA INMEDIATA
         return jsonify({"mensaje": f"Modo {modo} establecido"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/accion/actualizar_puntaje', methods=['POST'])
 def actualizar_puntaje():
-    """Actualiza el puntaje de un usuario"""
+    """Actualiza el puntaje de un usuario - OPTIMIZADO"""
     try:
         data = request.get_json()
         nombre = normalize_name(data.get('nombre', ''))
@@ -226,7 +236,9 @@ def actualizar_puntaje():
                 if puntaje > usuario.get('puntos', 0):
                     usuario['puntos'] = puntaje
                 
-                guardar_datos(USUARIOS_FILE, usuarios)
+                # ⚡ GUARDADO EN SEGUNDO PLANO
+                threading.Thread(target=guardar_datos, args=(USUARIOS_FILE, usuarios)).start()
+                
                 return jsonify({
                     "mensaje": f"Puntaje actualizado para {nombre}",
                     "puntos": usuario['puntos'],
@@ -250,4 +262,4 @@ if __name__ == '__main__':
     print("🚀 Iniciando API del Quiz...")
     print(f"👥 Usuarios cargados: {len(usuarios)}")
     print(f"❓ Preguntas cargadas: {len(preguntas)}")
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    app.run(host='0.0.0.0', port=8000, debug=False)  # debug=False para mejor rendimiento

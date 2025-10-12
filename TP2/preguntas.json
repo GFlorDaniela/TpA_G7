@@ -1,0 +1,13 @@
+[
+  {
+    "id": 1,
+    "texto": "¿Capital de España?",
+    "opciones": [
+      "Madrid",
+      "Paris",
+      "Atenas"
+    ],
+    "correcta": 1,
+    "puntaje": 10
+  }
+]
