@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <UniversalTelegramBot.h>
+#include <PubSubClient.h>
 
 // OLED
 #define SCREEN_WIDTH 128
@@ -28,6 +29,13 @@ const String CHAT_ID = "2044158296";
 // Clients
 WiFiClientSecure secureClient;
 UniversalTelegramBot bot(BOT_TOKEN, secureClient);
+WiFiClient clientMQTT;
+
+// --- Configuración de MQTT ---
+const char* mqtt_server = "test.mosquitto.org"; 
+const int mqtt_port = 1883;
+const char* mqtt_client_id = "esp32-file-sync"; // Un nombre único para la placa ESP32
+PubSubClient client(clientMQTT);
 
 // Estructuras de datos
 struct Pregunta {
@@ -86,6 +94,8 @@ bool cargarPreguntas();
 bool guardarUsuarios();
 bool cargarUsuarios();
 bool guardarPreguntasEnSPIFFS();
+void sincronizarArchivo(const char* rutaArchivo, const char* topico);
+void reconnect();
 
 // Funciones Telegram
 void conectarTelegram();
@@ -230,6 +240,44 @@ bool inicializarSPIFFS() {
   return true;
 }
 
+void sincronizarArchivo(const char* rutaArchivo, const char* topico) {
+    // 1. Abrir el archivo para lectura
+    File file = SPIFFS.open(rutaArchivo, "r");
+    if (!file) {
+        Serial.println("Error al abrir el archivo para leerlo.");
+        return;
+    }
+
+    // 2. Leer todo el contenido del archivo
+    String contenidoArchivo = file.readString();
+    file.close();
+
+    // 3. Publicar el contenido en el tópico MQTT
+    if (client.connected()) {
+        client.publish(topico, contenidoArchivo.c_str());
+        Serial.print("Archivo ");
+        Serial.print(rutaArchivo);
+        Serial.print(" sincronizado en el tópico ");
+        Serial.println(topico);
+    } else {
+        Serial.println("Cliente MQTT no conectado. No se pudo sincronizar.");
+    }
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Intentando conexión MQTT...");
+    if (client.connect(mqtt_client_id)) {
+      Serial.println("¡Conectado!");
+    } else {
+      Serial.print("falló, rc=");
+      Serial.print(client.state());
+      Serial.println(" intentando de nuevo en 5 segundos");
+      delay(5000);
+    }
+  }
+}
+
 bool cargarPreguntas() {
   File archivo = SPIFFS.open("/preguntas.json", "r");
   if(!archivo){
@@ -299,6 +347,7 @@ bool guardarPreguntasEnSPIFFS() {
   }
   
   archivo.close();
+  sincronizarArchivo("/preguntas.json", "esp32/archivos/preguntas.json");
   Serial.println("Preguntas guardadas correctamente");
   return true;
 }
@@ -327,6 +376,7 @@ bool guardarUsuarios() {
   }
   
   archivo.close();
+  sincronizarArchivo("/usuarios.json", "esp32/archivos/usuarios.json");
   return true;
 }
 
@@ -845,7 +895,7 @@ void setup() {
   cargarPreguntas();
   cargarUsuarios();
   conectarTelegram();
-  
+  client.setServer(mqtt_server, mqtt_port);
   mostrarPantallaInicio();
   Serial.println("Sistema listo");
 }
@@ -856,6 +906,10 @@ void loop() {
     procesarComandosTelegram();
     lastTimeBotRan = millis();
   }
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
 
   // Procesar encoder y botón (prioridad máxima)
   procesarEncoder();
