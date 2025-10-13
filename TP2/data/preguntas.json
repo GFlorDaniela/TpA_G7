@@ -1,31 +1,37 @@
 [
   {
-    "texto": "¿Qué lenguaje usa Arduino?",
-    "opciones": ["C++", "Python", "Java"],
+    "texto": "Sistema archivos ESP32",
+    "opciones": ["FAT32", "SPIFFS", "EXT4"],
+    "correcta": 1,
+    "puntaje": 10
+  },
+  {
+    "texto": "Protocolo IoT ESP32",
+    "opciones": ["HTTP", "MQTT", "FTP"],
+    "correcta": 1,
+    "puntaje": 10
+  },
+  {
+    "texto": "Inicializar SPIFFS",
+    "opciones": ["begin()", "start()", "mount()"],
     "correcta": 0,
     "puntaje": 10
   },
   {
-    "texto": "Capital de Francia",
-    "opciones": ["Roma", "Madrid", "París"],
-    "correcta": 2,
-    "puntaje": 15
-  },
-  {
-    "texto": "Color bandera Argentina",
-    "opciones": ["Azul", "Blanco", "Celeste"],
-    "correcta": 2,
+    "texto": "Reemplazo SPIFFS",
+    "opciones": ["FATFS", "LittleFS", "NTFS"],
+    "correcta": 1,
     "puntaje": 10
   },
   {
-    "texto": "¿2+2?",
-    "opciones": ["3", "4", "5"],
+    "texto": "Función NVS ESP32",
+    "opciones": ["Configurar WiFi", "Almacenar datos", "Conectar Bluetooth"],
     "correcta": 1,
-    "puntaje": 5
+    "puntaje": 10
   },
   {
-    "texto": "Animal Australia",
-    "opciones": ["Canguro", "Koala", "Emú"],
+    "texto": "Leer archivo SPIFFS",
+    "opciones": ["open()", "read()", "access()"],
     "correcta": 0,
     "puntaje": 10
   }

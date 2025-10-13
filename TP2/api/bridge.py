@@ -7,7 +7,7 @@ import requests
 import threading
 import time
 
-TOKEN = "8376405384:AAH_30BV0A7zlZotdfKpx3KucxvUtSanau8"
+TOKEN = "8238234652:AAEVwkqELgLiu8f_RpWsZlKfxq9azuSubUI"
 MQTT_SERVER = "test.mosquitto.org"
 MQTT_TOPIC = "wokwi/acciones"
 API_URL = "http://localhost:8000/accion"

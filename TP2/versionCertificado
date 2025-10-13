@@ -21,12 +21,12 @@ Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 #define ENCODER_SW 19
 
 // WiFi y Telegram - CONFIGURA ESTOS DATOS
-const char *ssid = "TU_WIFI_SSID";
-const char *password = "TU_WIFI_PASSWORD";
+const char *ssid = "ACNET2";
+const char *password = "";
 
 // Telegram - CONFIGURA CON TUS DATOS
-const String BOT_TOKEN = "TU_BOT_TOKEN";
-const String CHAT_ID = "TU_CHAT_ID";
+const String BOT_TOKEN = "8238234652:AAEVwkqELgLiu8f_RpWsZlKfxq9azuSubUI";
+const String CHAT_ID = "2044158296";
 
 // AGREGAR EL CERTIFICADO TELEGRAM AQUÍ (buscar en ejemplos de la librería)
 const char* TELEGRAM_CERTIFICATE_ROOT = \
