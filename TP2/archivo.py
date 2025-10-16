@@ -49,7 +49,7 @@ def sync_file_content(content, name):
 # --- Ejecución principal ---
 
 if __name__ == "__main__":
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1) # O VERSION2
+    client = mqtt.Client() # O VERSION2
     client.on_connect = on_connect
     client.on_message = on_message
 
