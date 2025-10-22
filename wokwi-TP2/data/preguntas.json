@@ -1,0 +1,38 @@
+[
+  {
+    "texto": "Sistema archivos ESP32",
+    "opciones": ["FAT32", "SPIFFS", "EXT4"],
+    "correcta": 1,
+    "puntaje": 10
+  },
+  {
+    "texto": "Protocolo IoT ESP32",
+    "opciones": ["HTTP", "MQTT", "FTP"],
+    "correcta": 1,
+    "puntaje": 10
+  },
+  {
+    "texto": "Inicializar SPIFFS",
+    "opciones": ["begin()", "start()", "mount()"],
+    "correcta": 0,
+    "puntaje": 10
+  },
+  {
+    "texto": "Reemplazo SPIFFS",
+    "opciones": ["FATFS", "LittleFS", "NTFS"],
+    "correcta": 1,
+    "puntaje": 10
+  },
+  {
+    "texto": "Función NVS ESP32",
+    "opciones": ["Configurar WiFi", "Almacenar datos", "Conectar Bluetooth"],
+    "correcta": 1,
+    "puntaje": 10
+  },
+  {
+    "texto": "Leer archivo SPIFFS",
+    "opciones": ["open()", "read()", "access()"],
+    "correcta": 0,
+    "puntaje": 10
+  }
+]

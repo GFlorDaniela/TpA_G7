@@ -1,0 +1,1070 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
+#include <SPIFFS.h>
+#include <ArduinoJson.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+#include <HTTPClient.h>
+
+// OLED
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// Pines
+#define LED_PIN 23
+#define ENCODER_CLK 18
+#define ENCODER_DT 5
+#define ENCODER_SW 19
+
+// WiFi y Telegram - CONFIGURA ESTOS DATOS
+const char *ssid = "ACNET2";
+const char *password = "";
+
+// Telegram - CONFIGURA CON TUS DATOS
+const String BOT_TOKEN = "8238234652:AAEVwkqELgLiu8f_RpWsZlKfxq9azuSubUI";
+const String CHAT_ID = "2044158296";
+
+// AGREGAR EL CERTIFICADO TELEGRAM AQUÍ (buscar en ejemplos de la librería)
+const char* TELEGRAM_CERTIFICATE_ROOT = \
+"-----BEGIN CERTIFICATE-----\n"
+"MIIEADCCAuigAwIBAgIBADANBgkqhkiG9w0BAQUFADBjMQswCQYDVQQGEwJVUzEh\n"
+"MB8GA1UEChMYVGhlIEdvIERhZGR5IEdyb3VwLCBJbmMuMTEwLwYDVQQLEyhHbyBE\n"
+"YWRkeSBDbGFzcyAyIENlcnRpZmljYXRpb24gQXV0aG9yaXR5MB4XDTA0MDYyOTE3\n"
+"MDYyMFoXDTM0MDYyOTE3MDYyMFowYzELMAkGA1UEBhMCVVMxITAfBgNVBAoTGFRo\n"
+"ZSBHbyBEYWRkeSBHcm91cCwgSW5jLjExMC8GA1UECxMoR28gRGFkZHkgQ2xhc3Mg\n"
+"MiBDZXJ0aWZpY2F0aW9uIEF1dGhvcml0eTCCASAwDQYJKoZIhvcNAQEBBQADggEN\n"
+"ADCCAQgCggEBAN6d1+pXGEmhW+vXX0iG6r7d/+TvZxz0ZWizV3GgXne77ZtJ6XCA\n"
+"PVYYYwhv2vLM0D9/AlQiVBDYsoHUwHU9S3/Hd8M+eKsaA7Ugay9qK7HFiH7Eux6w\n"
+"wdhFJ2+qN1j3hybX2C32qRe3H3I2TqYXP2WYktsqbl2i/ojgC95/5Y0V4evLOtXi\n"
+"EqITLdiOr18SPaAIBQi2XKVlOARFmR6jYGB0xUGlcmIbYsUfb18aQr4CUWWoriMY\n"
+"avx4A6lNf4DD+qta/KFApMoZFv6yyO9ecw3ud72a9nmYvLEHZ6IVDd2gWMZEewo+\n"
+"YihfukEHU1jPEX44dMX4/7VpkI+EdOqXG68CAQOjgcAwgb0wHQYDVR0OBBYEFNLE\n"
+"sNKR1EwRcbNhyz2h/t2oatTjMIGNBgNVHSMEgYUwgYKAFNLEsNKR1EwRcbNhyz2h\n"
+"/t2oatTjoWekZTBjMQswCQYDVQQGEwJVUzEhMB8GA1UEChMYVGhlIEdvIERhZGR5\n"
+"IEdyb3VwLCBJbmMuMTEwLwYDVQQLEyhHbyBEYWRkeSBDbGFzcyAyIENlcnRpZmlj\n"
+"YXRpb24gQXV0aG9yaXR5ggEAMAwGA1UdEwQFMAMBAf8wDQYJKoZIhvcNAQEFBQAD\n"
+"ggEBADJL87LKPpH8EsahB4yOd6AzBhRckB4Y9wimPQoZ+YeAEW5p5JYXMP80kWNy\n"
+"OO7MHAGjHZQopDH2esRU1/blMVgDoszOYtuURXO1v0XJJLXVggKtI3lpjbi2Tc7P\n"
+"TMozI+gciKqdi0FuFskg5YmezTvacPd+mSYgFFQlq25zheabIZ0KbIIOqPjCDPoQ\n"
+"HmyW74cNxA9hi63ugyuV+I6ShHI56yDqg+2DzZduCLzrTia2cyvk0/ZM/iZx4mER\n"
+"dEr/VxqHD3VILs9RaRegAhJhldXRQLIQTO7ErBBDpqWeCtWVYpoNz4iCxTIM5Cuf\n"
+"ReYNnyicsbkqWletNw+vHX/bvZ8=\n"
+"-----END CERTIFICATE-----\n";
+
+
+// Clients
+WiFiClientSecure secureClient;
+UniversalTelegramBot bot(BOT_TOKEN, secureClient);
+
+// Estructuras de datos
+struct Pregunta {
+  String texto;
+  String opciones[3];
+  int respuestaCorrecta;
+  int puntaje;
+};
+
+struct Usuario {
+  String nombre;
+  int puntuacionMaxima;
+  int partidasJugadas;
+  time_t ultimaPartida;
+};
+
+// Variables globales
+Pregunta preguntas[50];
+Usuario usuarios[100];
+int totalPreguntas = 0;
+int totalUsuarios = 0;
+int preguntaActual = 0;
+int opcionSeleccionada = 0;
+int puntuacionTotal = 0;
+int usuarioActual = -1;
+int oponenteActual = -1;
+bool quizCompletado = false;
+bool quizIniciado = false;
+String modoPartida = "";
+
+// Variables encoder para ESP32 real
+unsigned long lastButtonPress = 0;
+const unsigned long BUTTON_DEBOUNCE_MS = 50;
+const unsigned long ENCODER_STEP_MS = 50;
+int lastCLK = HIGH;
+bool encoderEnabled = true;
+unsigned long lastEncoderTime = 0;
+
+// Variables de sincronización Telegram
+bool necesitaActualizarPantalla = false;
+unsigned long ultimaActualizacionPantalla = 0;
+const unsigned long INTERVALO_ACTUALIZACION = 100;
+
+// Estados del sistema
+enum EstadoSistema {
+  ESTADO_INICIO,
+  ESTADO_SELECCION_MODO,
+  ESTADO_SELECCION_USUARIO,
+  ESTADO_ESPERA_INICIO,
+  ESTADO_SELECCION_OPONENTE,
+  ESTADO_JUGANDO,
+  ESTADO_FINAL
+};
+
+EstadoSistema estadoActual = ESTADO_INICIO;
+bool telegramConnected = false;
+unsigned long lastTimeBotRan = 0;
+
+// ==================== FUNCIONES ENCODER OPTIMIZADAS ====================
+
+int readEncoderWokwi() {
+  static int lastCLK = HIGH;
+  int currentCLK = digitalRead(ENCODER_CLK);
+  int currentDT = digitalRead(ENCODER_DT);
+  
+  // Detectar flanco de bajada en CLK
+  if (lastCLK == HIGH && currentCLK == LOW) {
+    lastCLK = currentCLK;
+    
+    // Leer estado de DT para determinar dirección
+    if (currentDT == HIGH) {
+      return 1;  // Giro horario
+    } else {
+      return -1; // Giro antihorario
+    }
+  }
+  
+  lastCLK = currentCLK;
+  return 0;
+}
+
+bool buttonPressedWokwi() {
+  static unsigned long lastPress = 0;
+  static bool lastState = HIGH;
+  
+  int currentState = digitalRead(ENCODER_SW);
+  
+  // Detectar flanco de bajada con debounce simple
+  if (lastState == HIGH && currentState == LOW) {
+    if (millis() - lastPress > BUTTON_DEBOUNCE_MS) {
+      lastPress = millis();
+      lastState = currentState;
+      return true;
+    }
+  }
+  
+  lastState = currentState;
+  return false;
+}
+
+void handleEncoderWokwi() {
+  static int lastCLK = HIGH;
+  static unsigned long lastEncoderAction = 0;
+  int currentCLK = digitalRead(ENCODER_CLK);
+  
+  // Solo procesar si ha pasado el tiempo de debounce
+  if (millis() - lastEncoderAction < ENCODER_STEP_MS) {
+    return;
+  }
+  
+  // Detectar cambio en CLK
+  if (lastCLK != currentCLK) {
+    lastEncoderAction = millis();
+    
+    // Si CLK cambió, leer DT para determinar dirección
+    if (currentCLK == LOW) {
+      int currentDT = digitalRead(ENCODER_DT);
+      if (currentDT == HIGH) {
+        // Giro hacia la derecha
+        if (opcionSeleccionada < 2) opcionSeleccionada++;
+        else opcionSeleccionada = 0;
+      } else {
+        // Giro hacia la izquierda  
+        if (opcionSeleccionada > 0) opcionSeleccionada--;
+        else opcionSeleccionada = 2;
+      }
+      
+      // Actualizar pantalla según el estado actual
+      actualizarPantallaSegunEstado();
+    }
+    
+    lastCLK = currentCLK;
+  }
+}
+
+// ==================== FUNCIONES SPIFFS ====================
+
+bool inicializarSPIFFS() {
+  if(!SPIFFS.begin(true)){
+    Serial.println("Error al montar SPIFFS");
+    return false;
+  }
+  Serial.println("SPIFFS montado correctamente");
+  return true;
+}
+
+bool cargarPreguntas() {
+  File archivo = SPIFFS.open("/preguntas.json", "r");
+  if(!archivo){
+    Serial.println("Error al abrir preguntas.json");
+    return false;
+  }
+  
+  DynamicJsonDocument doc(4096);
+  DeserializationError error = deserializeJson(doc, archivo);
+  archivo.close();
+  
+  if(error){
+    Serial.println("Error al parsear JSON: " + String(error.c_str()));
+    return false;
+  }
+  
+  JsonArray preguntasArray = doc.as<JsonArray>();
+  totalPreguntas = 0;
+  
+  for(JsonObject preguntaObj : preguntasArray) {
+    if(totalPreguntas >= 50) break;
+    
+    preguntas[totalPreguntas].texto = preguntaObj["texto"].as<String>();
+    preguntas[totalPreguntas].opciones[0] = preguntaObj["opciones"][0].as<String>();
+    preguntas[totalPreguntas].opciones[1] = preguntaObj["opciones"][1].as<String>();
+    preguntas[totalPreguntas].opciones[2] = preguntaObj["opciones"][2].as<String>();
+    preguntas[totalPreguntas].respuestaCorrecta = preguntaObj["correcta"].as<int>();
+    preguntas[totalPreguntas].puntaje = preguntaObj["puntaje"].as<int>();
+    
+    totalPreguntas++;
+  }
+  
+  Serial.println("Preguntas cargadas: " + String(totalPreguntas));
+  return true;
+}
+
+bool guardarUsuarios() {
+  File archivo = SPIFFS.open("/usuarios.json", "w");
+  if(!archivo){
+    Serial.println("Error al crear usuarios.json");
+    return false;
+  }
+  
+  DynamicJsonDocument doc(8192);
+  JsonArray usuariosArray = doc.to<JsonArray>();
+  
+  for(int i = 0; i < totalUsuarios; i++) {
+    JsonObject usuarioObj = usuariosArray.createNestedObject();
+    usuarioObj["nombre"] = usuarios[i].nombre;
+    usuarioObj["puntuacionMaxima"] = usuarios[i].puntuacionMaxima;
+    usuarioObj["partidasJugadas"] = usuarios[i].partidasJugadas;
+    usuarioObj["ultimaPartida"] = usuarios[i].ultimaPartida;
+  }
+  
+  if(serializeJsonPretty(doc, archivo) == 0){
+    Serial.println("Error al escribir en usuarios.json");
+    archivo.close();
+    return false;
+  }
+  
+  archivo.close();
+  Serial.println("Usuarios guardados correctamente");
+  return true;
+}
+
+bool cargarUsuarios() {
+  if(!SPIFFS.exists("/usuarios.json")) {
+    Serial.println("Archivo usuarios.json no existe, se creará uno nuevo");
+    return guardarUsuarios(); // Crear archivo vacío
+  }
+  
+  File archivo = SPIFFS.open("/usuarios.json", "r");
+  if(!archivo){
+    Serial.println("Error al abrir usuarios.json");
+    return false;
+  }
+  
+  DynamicJsonDocument doc(8192);
+  DeserializationError error = deserializeJson(doc, archivo);
+  archivo.close();
+  
+  if(error){
+    Serial.println("Error al parsear JSON: " + String(error.c_str()));
+    return false;
+  }
+  
+  JsonArray usuariosArray = doc.as<JsonArray>();
+  totalUsuarios = 0;
+  
+  for(JsonObject usuarioObj : usuariosArray) {
+    if(totalUsuarios >= 100) break;
+    
+    usuarios[totalUsuarios].nombre = usuarioObj["nombre"].as<String>();
+    usuarios[totalUsuarios].puntuacionMaxima = usuarioObj["puntuacionMaxima"].as<int>();
+    usuarios[totalUsuarios].partidasJugadas = usuarioObj["partidasJugadas"].as<int>();
+    usuarios[totalUsuarios].ultimaPartida = usuarioObj["ultimaPartida"].as<time_t>();
+    
+    totalUsuarios++;
+  }
+  
+  Serial.println("Usuarios cargados: " + String(totalUsuarios));
+  return true;
+}
+
+// ==================== FUNCIONES TELEGRAM ====================
+
+void conectarTelegram() {
+  Serial.println("📶 Conectando a WiFi...");
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("Conectando WiFi...");
+  display.display();
+
+  WiFi.begin(ssid, password);
+
+  int intentos = 0;
+  while (WiFi.status() != WL_CONNECTED && intentos < 20) {
+    delay(1000);
+    Serial.print(".");
+    intentos++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ Conectado a WiFi!");
+    Serial.print("📡 IP: ");
+    Serial.println(WiFi.localIP());
+
+    // CONFIGURACIÓN DE HORA (ESENCIAL PARA CERTIFICADOS SSL)
+    Serial.print("Obteniendo hora NTP...");
+    configTime(0, 0, "pool.ntp.org");
+    time_t now = time(nullptr);
+    int timeout = 0;
+    while (now < 24 * 3600 && timeout < 30) {
+      Serial.print(".");
+      delay(500);
+      now = time(nullptr);
+      timeout++;
+    }
+    if (now >= 24 * 3600) {
+      Serial.println(" OK");
+    } else {
+      Serial.println(" FALLÓ");
+    }
+
+    // CONFIGURAR CERTIFICADO SSL
+    secureClient.setCACert(TELEGRAM_CERTIFICATE_ROOT);
+
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("Conectando Telegram...");
+    display.display();
+
+    int botUsuarios = bot.getUpdates(0);
+    if (botUsuarios != -1) {
+      telegramConnected = true;
+      Serial.println("✅ Conexión con Telegram exitosa!");
+
+      bot.sendMessage(CHAT_ID, "🤖 ¡Bot del Quiz ESP32 conectado! 🎮", "");
+      bot.sendMessage(CHAT_ID, "Usa /seleccionar_partida para elegir modo de juego", "");
+
+      estadoActual = ESTADO_INICIO;
+      mostrarPantallaConexiones();
+    } else {
+      Serial.println("❌ Error en conexión Telegram");
+      estadoActual = ESTADO_INICIO;
+      mostrarPantallaConexiones();
+    }
+  } else {
+    Serial.println("\n❌ Error conectando a WiFi");
+    estadoActual = ESTADO_INICIO;
+    mostrarPantallaConexiones();
+  }
+}
+
+void procesarComandosTelegram() {
+  if (!telegramConnected) return;
+
+  int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  
+  if (numNewMessages > 0) {
+    necesitaActualizarPantalla = true;
+    Serial.println("🎯 Mensajes nuevos detectados - forzando actualización");
+  }
+
+  while (numNewMessages) {
+    for (int i = 0; i < numNewMessages; i++) {
+      String raw_chat_id = bot.messages[i].chat_id;
+      String raw_text = bot.messages[i].text;
+      
+      String text = raw_text;
+      text.trim();
+      if (!text.startsWith("/")) {
+        text = "/" + text;
+      }
+      text.toLowerCase();
+
+      // ACEPTAR CUALQUIER CHAT (para pruebas)
+      bool aceptarCualquierChat = true;
+      bool mismo_chat = aceptarCualquierChat;
+
+      if (!mismo_chat) {
+        Serial.println("⚠️ Mensaje ignorado: chat distinto.");
+        continue;
+      }
+
+      // ACK automático
+      if (telegramConnected) {
+        String ack = "✅ Recibido: " + raw_text;
+        bot.sendMessage(raw_chat_id, ack, "");
+      }
+
+      // COMANDOS (igual que en versión Wokwi)
+      if (text == "/start" || text == "/help") {
+        String welcome = "🎮 *Quiz ESP32 - Comandos disponibles:*\n";
+        welcome += "/seleccionar_partida 1vs1\n";
+        welcome += "/seleccionar_partida ranking\n";
+        welcome += "/seleccionar_partida multijugador\n";
+        welcome += "/iniciar_partida\n";
+        welcome += "/ingresar_usuario NOMBRE\n";
+        welcome += "/ranking\n";
+        welcome += "/estado\n";
+        bot.sendMessage(raw_chat_id, welcome, "Markdown");
+      }
+      else if (text == "/estado") {
+        String estado = "📊 *Estado Actual:*\n";
+        estado += "Modo: " + (modoPartida == "" ? "No seleccionado" : modoPartida) + "\n";
+        estado += "Estado: ";
+        switch (estadoActual) {
+          case ESTADO_INICIO: estado += "Inicio"; break;
+          case ESTADO_SELECCION_MODO: estado += "Seleccionando modo"; break;
+          case ESTADO_SELECCION_USUARIO: estado += "Seleccionando usuario"; break;
+          case ESTADO_JUGANDO: estado += "Jugando"; break;
+          case ESTADO_FINAL: estado += "Finalizado"; break;
+        }
+        estado += "\nPregunta: " + String(preguntaActual + 1) + "/" + String(totalPreguntas);
+        estado += "\nPuntuación: " + String(puntuacionTotal);
+        estado += "\nUsuario: " + (usuarioActual >= 0 ? usuarios[usuarioActual].nombre : "No seleccionado");
+        bot.sendMessage(raw_chat_id, estado, "Markdown");
+      }
+      else if (text == "/ranking") {
+        String rankingMsg = "🏆 *Ranking Actual:*\n";
+        if (totalUsuarios == 0) {
+          rankingMsg += "No hay usuarios registrados";
+        } else {
+          for (int k = 0; k < (totalUsuarios < 5 ? totalUsuarios : 5); k++) {
+            rankingMsg += String(k + 1) + ". " + usuarios[k].nombre + " - " + String(usuarios[k].puntuacionMaxima) + " pts\n";
+          }
+        }
+        bot.sendMessage(raw_chat_id, rankingMsg, "Markdown");
+      }
+      else if (text.startsWith("/seleccionar_partida")) {
+        String modo = text.substring(String("/seleccionar_partida").length());
+        modo.trim();
+        modo.toLowerCase();
+
+        if (modo.length() == 0) {
+          String ayuda = "🎮 *Selecciona modo de partida:*\n";
+          ayuda += "/seleccionar_partida 1vs1\n";
+          ayuda += "/seleccionar_partida ranking\n";
+          ayuda += "/seleccionar_partida multijugador";
+          bot.sendMessage(raw_chat_id, ayuda, "Markdown");
+        }
+        else if (modo == "1vs1" || modo == "ranking" || modo == "multijugador") {
+          modoPartida = modo;
+          bot.sendMessage(raw_chat_id, "✅ Modo seleccionado: *" + modo + "*", "Markdown");
+          
+          estadoActual = ESTADO_SELECCION_USUARIO;
+          opcionSeleccionada = 0;
+          necesitaActualizarPantalla = true;
+        }
+        else {
+          bot.sendMessage(raw_chat_id, "❌ Modos válidos: 1vs1, ranking, multijugador", "Markdown");
+        }
+      }
+      else if (text == "/iniciar_partida") {
+        if (modoPartida == "") {
+          bot.sendMessage(raw_chat_id, "❌ Primero selecciona un modo con /seleccionar_partida", "Markdown");
+        }
+        else if (estadoActual != ESTADO_JUGANDO && estadoActual != ESTADO_FINAL) {
+          bot.sendMessage(raw_chat_id, "🎮 Iniciando partida en modo: *" + modoPartida + "*", "Markdown");
+          iniciarJuego();
+        }
+        else {
+          bot.sendMessage(raw_chat_id, "⚠️ El juego ya está en curso", "Markdown");
+        }
+      }
+      else if (text.startsWith("/ingresar_usuario")) {
+        String nombre = text.substring(String("/ingresar_usuario").length());
+        nombre.trim();
+        if (nombre.length() == 0) {
+          bot.sendMessage(raw_chat_id, "❌ Ingresa un nombre: /ingresar_usuario Sofi", "Markdown");
+        } else {
+          nombre.toUpperCase();
+          int usuarioExistente = buscarUsuario(nombre);
+
+          if (usuarioExistente == -1) {
+            agregarUsuario(nombre, true, true);
+            bot.sendMessage(raw_chat_id, "✅ Usuario registrado: *" + nombre + "*", "Markdown");
+            
+            usuarioActual = buscarUsuario(nombre);
+            opcionSeleccionada = usuarioActual >= 0 ? usuarioActual : 0;
+            
+            if (modoPartida == "1vs1") {
+              estadoActual = ESTADO_SELECCION_OPONENTE;
+              opcionSeleccionada = (usuarioActual == 0 && totalUsuarios>1) ? 1 : 0;
+            } else {
+              estadoActual = ESTADO_ESPERA_INICIO;
+            }
+            necesitaActualizarPantalla = true;
+            
+            bot.sendMessage(raw_chat_id, "✅ Usuario creado: *" + nombre + "*. Gira el encoder o usa /iniciar_partida para comenzar.", "Markdown");
+          }
+          else {
+            usuarioActual = usuarioExistente;
+            bot.sendMessage(raw_chat_id, "✅ Usuario seleccionado: *" + nombre + "*", "Markdown");
+            
+            estadoActual = ESTADO_ESPERA_INICIO;
+            opcionSeleccionada = usuarioActual;
+            necesitaActualizarPantalla = true;
+
+            if (modoPartida != "") {
+              bot.sendMessage(raw_chat_id, "🎮 Iniciando partida automáticamente...", "Markdown");
+              iniciarJuego();
+            }
+          }
+        }
+      }
+      else {
+        bot.sendMessage(raw_chat_id, "❓ Comando no reconocido. Usa /help para ver comandos.", "Markdown");
+      }
+    }
+    
+    numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    if (numNewMessages > 0) {
+      necesitaActualizarPantalla = true;
+    }
+  }
+}
+
+// ==================== FUNCIONES DE USUARIOS ====================
+
+int buscarUsuario(String nombre) {
+  for(int i = 0; i < totalUsuarios; i++) {
+    if(usuarios[i].nombre == nombre) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+void agregarUsuario(String nombre, bool setAsCurrent = true, bool notify = true) {
+  if(totalUsuarios < 100) {
+    usuarios[totalUsuarios].nombre = nombre;
+    usuarios[totalUsuarios].puntuacionMaxima = 0;
+    usuarios[totalUsuarios].partidasJugadas = 0;
+    usuarios[totalUsuarios].ultimaPartida = time(nullptr);
+    
+    if (setAsCurrent) {
+      usuarioActual = totalUsuarios;
+    }
+    
+    totalUsuarios++;
+    guardarUsuarios();
+    
+    Serial.println("Nuevo usuario creado: " + nombre);
+    
+    if (notify && telegramConnected) {
+      bot.sendMessage(CHAT_ID, "👤 Nuevo usuario registrado: *" + nombre + "*", "Markdown");
+    }
+  }
+}
+
+void actualizarPuntuacionUsuario() {
+  if(usuarioActual >= 0) {
+    usuarios[usuarioActual].partidasJugadas++;
+    usuarios[usuarioActual].ultimaPartida = time(nullptr);
+    
+    if(puntuacionTotal > usuarios[usuarioActual].puntuacionMaxima) {
+      usuarios[usuarioActual].puntuacionMaxima = puntuacionTotal;
+    }
+    
+    guardarUsuarios();
+    
+    Serial.println("Usuario " + usuarios[usuarioActual].nombre + 
+                  " actualizado. Max: " + usuarios[usuarioActual].puntuacionMaxima +
+                  " Partidas: " + usuarios[usuarioActual].partidasJugadas);
+                  
+    if (telegramConnected) {
+      String msg = "🏆 *Actualización de Usuario:*\n";
+      msg += "Jugador: " + usuarios[usuarioActual].nombre + "\n";
+      msg += "Puntuación máxima: " + String(usuarios[usuarioActual].puntuacionMaxima) + "\n";
+      msg += "Partidas jugadas: " + String(usuarios[usuarioActual].partidasJugadas);
+      bot.sendMessage(CHAT_ID, msg, "Markdown");
+    }
+  }
+}
+
+// ==================== FUNCIONES DE PANTALLA ====================
+
+void mostrarPantallaConexiones() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("✅ SISTEMA LISTO");
+  display.setCursor(0, 12);
+  display.println("WiFi: CONECTADO");
+  display.setCursor(0, 24);
+  display.println("Telegram: OK");
+  display.setCursor(0, 36);
+  display.println("SPIFFS: ACTIVO");
+  display.setCursor(0, 48);
+  display.println("Usa Telegram:");
+  display.setCursor(0, 56);
+  display.println("/ingresar_usuario");
+  display.display();
+}
+
+void mostrarPantallaSeleccionModo() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("SELECCIONA MODO:");
+
+  String opciones[] = {"1vs1", "Ranking", "Multijugador"};
+  for (int i = 0; i < 3; i++) {
+    display.setCursor(5, 15 + i * 12);
+    if (i == opcionSeleccionada) {
+      display.print("> ");
+    } else {
+      display.print("  ");
+    }
+    display.println(opciones[i]);
+  }
+
+  display.setCursor(0, 55);
+  display.println("Click: Seleccionar");
+  display.display();
+}
+
+void mostrarPantallaSeleccionUsuario() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("SELECCIONA USUARIO:");
+
+  if (totalUsuarios == 0) {
+    display.setCursor(5, 20);
+    display.println("No hay usuarios");
+    display.setCursor(5, 32);
+    display.println("Usa Telegram:");
+    display.setCursor(5, 44);
+    display.println("/ingresar_usuario");
+    display.setCursor(5, 56);
+    display.println("para crear uno");
+  } else {
+    for (int i = 0; i < min(4, totalUsuarios); i++) {
+      display.setCursor(5, 15 + i * 12);
+      if (i == opcionSeleccionada) {
+        display.print("> ");
+      } else {
+        display.print("  ");
+      }
+      display.println(usuarios[i].nombre);
+    }
+
+    display.setCursor(0, 55);
+    display.println("Click: Seleccionar");
+  }
+  display.display();
+}
+
+void mostrarPantallaEsperaInicio() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("LISTO PARA INICIAR");
+  display.setCursor(0, 12);
+  if (usuarioActual >= 0) {
+    display.print("Jugador: ");
+    display.println(usuarios[usuarioActual].nombre);
+  }
+  display.setCursor(0, 28);
+  display.println("Gira el encoder ->");
+  display.setCursor(0, 40);
+  display.println("o /iniciar_partida");
+  display.setCursor(0, 56);
+  if (modoPartida == "1vs1") {
+    display.println("Click: Seleccionar oponente");
+  } else {
+    display.println("Click: Iniciar");
+  }
+  display.display();
+}
+
+void mostrarPantallaSeleccionOponente() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("SELECC. OPONENTE:");
+
+  if (totalUsuarios <= 1) {
+    display.setCursor(5, 20);
+    display.println("No hay otros usuarios");
+    display.setCursor(5, 36);
+    display.println("Crea mas en Telegram");
+    display.setCursor(5, 56);
+    display.println("Click: Volver");
+    display.display();
+    return;
+  }
+
+  int mostrarIdx = 0;
+  for (int i = 0; i < totalUsuarios && mostrarIdx < 4; i++) {
+    if (i == usuarioActual) continue;
+
+    display.setCursor(5, 15 + mostrarIdx * 12);
+    if (i == opcionSeleccionada) {
+      display.print("> ");
+    } else {
+      display.print("  ");
+    }
+    display.println(usuarios[i].nombre);
+    mostrarIdx++;
+  }
+
+  display.setCursor(0, 55);
+  display.println("Click: Seleccionar");
+  display.display();
+}
+
+void mostrarPregunta() {
+  display.clearDisplay();
+
+  display.setCursor(0, 0);
+  if (usuarioActual >= 0) {
+    display.print(usuarios[usuarioActual].nombre);
+  }
+  if (modoPartida == "1vs1" && oponenteActual >= 0) {
+    display.setCursor(70, 0);
+    display.print("VS:");
+    display.setCursor(88, 0);
+    display.print(usuarios[oponenteActual].nombre);
+  } else {
+    display.print("JUGADOR");
+  }
+  display.setCursor(70, 0);
+  display.print(preguntaActual + 1);
+  display.print("/");
+  display.print(totalPreguntas);
+  display.setCursor(100, 0);
+  display.print(puntuacionTotal);
+
+  mostrarTextoEnLineas(limpiarTexto(preguntas[preguntaActual].texto), 0, 12, 128);
+
+  for (int i = 0; i < 3; i++) {
+    display.setCursor(5, 25 + i * 12);
+    if (i == opcionSeleccionada) {
+      display.print("> ");
+    } else {
+      display.print("  ");
+    }
+    display.println(preguntas[preguntaActual].opciones[i]);
+  }
+
+  display.display();
+}
+
+void mostrarResultado() {
+  display.clearDisplay();
+  display.setCursor(20, 10);
+  display.println("QUIZ COMPLETADO!");
+  display.setCursor(10, 25);
+  if (usuarioActual >= 0) {
+    display.print("Jugador: ");
+    display.println(usuarios[usuarioActual].nombre);
+  }
+  display.setCursor(30, 40);
+  display.print("Puntos: ");
+  display.println(puntuacionTotal);
+
+  if (modoPartida == "1vs1" && oponenteActual >= 0) {
+    display.setCursor(0, 50);
+    String s = "VS "; s += usuarios[oponenteActual].nombre;
+    display.println(s);
+    display.setCursor(80, 50);
+    display.print("O: "); display.print(usuarios[oponenteActual].puntuacionMaxima);
+  }
+  display.setCursor(5, 55);
+  display.println("Click para reiniciar");
+  display.display();
+}
+
+void actualizarPantallaSegunEstado() {
+  Serial.print("🔄 Actualizando pantalla forzada - Estado: ");
+  Serial.println(estadoActual);
+  
+  switch(estadoActual) {
+    case ESTADO_INICIO:
+      mostrarPantallaConexiones();
+      break;
+    case ESTADO_SELECCION_MODO:
+      mostrarPantallaSeleccionModo();
+      break;
+    case ESTADO_SELECCION_USUARIO:
+      mostrarPantallaSeleccionUsuario();
+      break;
+    case ESTADO_ESPERA_INICIO:
+      mostrarPantallaEsperaInicio();
+      break;
+    case ESTADO_SELECCION_OPONENTE:
+      mostrarPantallaSeleccionOponente();
+      break;
+    case ESTADO_JUGANDO:
+      mostrarPregunta();
+      break;
+    case ESTADO_FINAL:
+      mostrarResultado();
+      break;
+  }
+  necesitaActualizarPantalla = false;
+}
+
+// ==================== FUNCIONES DEL QUIZ ====================
+
+void mostrarTextoEnLineas(String texto, int x, int y, int anchoMax) {
+  int inicio = 0;
+  int fin = anchoMax / 6;
+
+  while (inicio < texto.length()) {
+    if (fin > texto.length()) fin = texto.length();
+
+    int ultimoEspacio = texto.lastIndexOf(' ', fin);
+    if (ultimoEspacio == -1 || ultimoEspacio <= inicio) ultimoEspacio = fin;
+
+    display.setCursor(x, y);
+    display.println(texto.substring(inicio, ultimoEspacio));
+
+    y += 10;
+    inicio = ultimoEspacio + 1;
+    fin = inicio + (anchoMax / 6);
+  }
+}
+
+String limpiarTexto(String texto) {
+  texto.replace("á", "a");
+  texto.replace("é", "e");
+  texto.replace("í", "i");
+  texto.replace("ó", "o");
+  texto.replace("ú", "u");
+  texto.replace("ñ", "n");
+  texto.replace("¿", "?");
+  texto.replace("¡", "!");
+  return texto;
+}
+
+void verificarRespuesta() {
+  bool correcta = (opcionSeleccionada == preguntas[preguntaActual].respuestaCorrecta);
+
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println(preguntas[preguntaActual].texto);
+  display.setCursor(0, 15);
+  display.print("Elegiste: ");
+  display.println(preguntas[preguntaActual].opciones[opcionSeleccionada]);
+
+  if (correcta) {
+    puntuacionTotal += preguntas[preguntaActual].puntaje;
+    display.setCursor(0, 30);
+    display.print("CORRECTO! +");
+    display.print(preguntas[preguntaActual].puntaje);
+    digitalWrite(LED_PIN, HIGH);
+
+    if (telegramConnected) {
+      bot.sendMessage(CHAT_ID, "✅ ¡Respuesta correcta! +" + String(preguntas[preguntaActual].puntaje) + " puntos", "");
+    }
+  } else {
+    display.setCursor(0, 30);
+    display.println("INCORRECTO");
+    display.setCursor(0, 45);
+    display.print("Correcta: ");
+    display.println(preguntas[preguntaActual].opciones[preguntas[preguntaActual].respuestaCorrecta]);
+
+    if (telegramConnected) {
+      bot.sendMessage(CHAT_ID, "❌ Respuesta incorrecta. La correcta era: " + preguntas[preguntaActual].opciones[preguntas[preguntaActual].respuestaCorrecta], "");
+    }
+  }
+
+  display.display();
+  delay(1500);
+  digitalWrite(LED_PIN, LOW);
+
+  preguntaActual++;
+  if (preguntaActual >= totalPreguntas) {
+    quizCompletado = true;
+    actualizarPuntuacionUsuario();
+    estadoActual = ESTADO_FINAL;
+    mostrarResultado();
+
+    if (telegramConnected) {
+      String resultado = "🏁 *QUIZ COMPLETADO!*\n";
+      resultado += "Jugador: " + (usuarioActual >= 0 ? usuarios[usuarioActual].nombre : "Anónimo") + "\n";
+      resultado += "Puntuación final: *" + String(puntuacionTotal) + "* puntos\n";
+      resultado += "Modo de juego: " + modoPartida;
+      bot.sendMessage(CHAT_ID, resultado, "Markdown");
+    }
+  } else {
+    opcionSeleccionada = 0;
+    mostrarPregunta();
+  }
+}
+
+void iniciarJuego() {
+  Serial.println("=== 🎮 INICIAR JUEGO ===");
+  
+  if (usuarioActual < 0 || usuarioActual >= totalUsuarios) {
+    Serial.println("❌ ERROR: No hay usuario seleccionado válido");
+    return;
+  }
+  
+  if (modoPartida == "") {
+    Serial.println("❌ ERROR: No hay modo seleccionado");
+    return;
+  }
+  
+  Serial.print("Jugador: ");
+  Serial.println(usuarios[usuarioActual].nombre);
+  Serial.print("Modo: ");
+  Serial.println(modoPartida);
+  
+  quizIniciado = true;
+  quizCompletado = false;
+  preguntaActual = 0;
+  opcionSeleccionada = 0;
+  puntuacionTotal = 0;
+  estadoActual = ESTADO_JUGANDO;
+  
+  if (telegramConnected) {
+    String mensaje = "🎮 Partida iniciada!\n";
+    mensaje += "Jugador: *" + usuarios[usuarioActual].nombre + "*\n";
+    mensaje += "Modo: *" + modoPartida + "*";
+    if (modoPartida == "1vs1" && oponenteActual >= 0) {
+      mensaje += "\nOponente: *" + usuarios[oponenteActual].nombre + "*";
+    }
+    bot.sendMessage(CHAT_ID, mensaje, "Markdown");
+  }
+  
+  mostrarPregunta();
+  Serial.println("✅ Juego iniciado correctamente");
+}
+
+void reiniciarQuiz() {
+  preguntaActual = 0;
+  opcionSeleccionada = 0;
+  puntuacionTotal = 0;
+  quizCompletado = false;
+  quizIniciado = false;
+  estadoActual = ESTADO_INICIO;
+
+  mostrarPantallaConexiones();
+
+  if (telegramConnected) {
+    bot.sendMessage(CHAT_ID, "🔄 Quiz reiniciado. Listo para nueva partida", "");
+  }
+}
+
+// ==================== SETUP Y LOOP ====================
+
+void setup() {
+  Serial.begin(115200); // Aumentado para mejor debug
+  Serial.println("🚀 Iniciando sistema Quiz ESP32...");
+  
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(ENCODER_CLK, INPUT_PULLUP);
+  pinMode(ENCODER_DT, INPUT_PULLUP);
+  pinMode(ENCODER_SW, INPUT_PULLUP);
+  
+  // Inicializar display
+  if(!display.begin(0x3c, true)) {
+    Serial.println("❌ Error inicializando OLED");
+    while(1);
+  }
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+  display.clearDisplay();
+  
+  // Inicializar sistema de archivos
+  if(!inicializarSPIFFS()) {
+    Serial.println("❌ Fallo en SPIFFS");
+  }
+  
+  // Cargar datos
+  if(!cargarPreguntas()) {
+    Serial.println("⚠️ Usando preguntas por defecto");
+  }
+  
+  if(!cargarUsuarios()) {
+    Serial.println("⚠️ Error cargando usuarios");
+  }
+  
+  // Conectar a Telegram
+  conectarTelegram();
+  
+  Serial.println("✅ Sistema listo con Telegram y SPIFFS");
+}
+
+void loop() {
+  // Procesar Telegram frecuentemente
+  if (millis() > lastTimeBotRan + 100) {
+    procesarComandosTelegram();
+    lastTimeBotRan = millis();
+  }
+
+  // Verificar actualizaciones de pantalla
+  if (necesitaActualizarPantalla && (millis() - ultimaActualizacionPantalla > INTERVALO_ACTUALIZACION)) {
+    actualizarPantallaSegunEstado();
+    ultimaActualizacionPantalla = millis();
+  }
+
+  // Manejar encoder
+  handleEncoderWokwi();
+
+  // Manejar botón
+  if (buttonPressedWokwi()) {
+    switch(estadoActual) {
+      case ESTADO_SELECCION_MODO: {
+        String modos[] = {"1vs1", "ranking", "multijugador"};
+        modoPartida = modos[opcionSeleccionada];
+        estadoActual = ESTADO_SELECCION_USUARIO;
+        opcionSeleccionada = 0;
+        necesitaActualizarPantalla = true;
+        break;
+      }
+      
+      case ESTADO_SELECCION_USUARIO:
+        if (totalUsuarios > 0) {
+          usuarioActual = opcionSeleccionada;
+          estadoActual = ESTADO_ESPERA_INICIO;
+          necesitaActualizarPantalla = true;
+        }
+        break;
+      
+      case ESTADO_ESPERA_INICIO:
+        if (modoPartida == "1vs1") {
+          estadoActual = ESTADO_SELECCION_OPONENTE;
+          opcionSeleccionada = (usuarioActual == 0 && totalUsuarios>1) ? 1 : 0;
+          necesitaActualizarPantalla = true;
+        } else {
+          iniciarJuego();
+        }
+        break;
+      
+      case ESTADO_SELECCION_OPONENTE:
+        if (totalUsuarios > 1) {
+          oponenteActual = opcionSeleccionada;
+          iniciarJuego();
+        }
+        break;
+      
+      case ESTADO_JUGANDO:
+        verificarRespuesta();
+        break;
+      
+      case ESTADO_FINAL:
+        reiniciarQuiz();
+        break;
+    }
+  }
+}

@@ -1,0 +1,15 @@
+[wokwi]
+version = 1
+firmware = '.pio/build/esp32dev/firmware.bin'
+elf = '.pio/build/esp32dev/firmware.elf'
+
+[dependencies]
+"UniversalTelegramBot" = "1.3.0"
+"ArduinoJson" = "6.19.4"
+"WiFi" = "1.0"
+
+[[panel]]
+type = "wokwi-pi-pico"
+
+[[net]]
+groups = ["wifi"]
